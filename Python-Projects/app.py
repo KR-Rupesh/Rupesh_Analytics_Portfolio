@@ -1,17 +1,7 @@
 import time
 import subprocess
 
-# 1. Clear old processes & install dependencies
-!pkill -f streamlit
-!pkill -f cloudflared
-!pip install -q streamlit yfinance plotly pandas requests gspread google-auth
 
-# 2. Download Cloudflare tunnel binary
-!wget -q -c https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O cloudflared
-!chmod +x cloudflared
-
-# 3. Create the complete app.py script
-app_code = """
 import streamlit as st
 import yfinance as yf
 import pandas as pd
