@@ -135,10 +135,9 @@ nse_stocks = get_nse_stocks()
 mf_dict = get_mf_list()
 
 # 2. Sidebar Inputs
-st.sidebar.header("1. Asset Class Options")
+st.sidebar.header("1. Portfolio Asset Inputs")
 
-# Stocks (Default Active)
-st.sidebar.subheader("📈 NSE Equity Stocks (Default)")
+# Stocks Inputs (Default Active - No Toggle)
 selected_stocks = st.sidebar.multiselect(
     "Select NSE Stocks (Max 10)",
     options=nse_stocks,
@@ -148,34 +147,35 @@ selected_stocks = st.sidebar.multiselect(
 
 stock_quantities = {}
 if selected_stocks:
-    st.sidebar.caption("Enter Share Quantities:")
+    st.sidebar.subheader("Stock Quantities")
     for stock in selected_stocks:
         ticker = stock.split(" | ")[0]
         stock_quantities[ticker] = st.sidebar.number_input(f"Shares for {ticker}", min_value=1, value=10, step=1)
 
-# Mutual Fund Toggle
-enable_mf = st.sidebar.toggle("Include Mutual Funds in Analysis", value=False)
-selected_mf = None
-mf_amount = 0.0
-if enable_mf:
-    selected_mf = st.sidebar.selectbox("Select Mutual Fund", options=list(mf_dict.keys()))
-    mf_amount = st.sidebar.number_input("Mutual Fund Invested Amount (₹)", min_value=0.0, value=25000.0, step=5000.0)
+st.sidebar.divider()
 
-# Gold Toggle
-enable_gold = st.sidebar.toggle("Include Gold Investment", value=False)
-gold_amount = 0.0
-if enable_gold:
-    gold_amount = st.sidebar.number_input("Gold Amount (₹)", min_value=0.0, value=50000.0, step=5000.0)
+# Mutual Fund Section with Toggle
+st.sidebar.subheader("Mutual Fund Investment")
+enable_mf = st.sidebar.toggle("Enable Mutual Fund Calculation", value=False)
+selected_mf = st.sidebar.selectbox("Select Mutual Fund", options=list(mf_dict.keys()), disabled=not enable_mf)
+mf_amount = st.sidebar.number_input("Mutual Fund Invested Amount (₹)", min_value=0.0, value=25000.0, step=5000.0, disabled=not enable_mf)
 
-# FD Toggle
-enable_fd = st.sidebar.toggle("Include Fixed Deposit (FD)", value=False)
-fd_amount = 0.0
-fd_rate = 0.0
-if enable_fd:
-    fd_amount = st.sidebar.number_input("FD Amount (₹)", min_value=0.0, value=100000.0, step=5000.0)
-    fd_rate = st.sidebar.number_input("FD Interest Rate (% p.a.)", min_value=0.0, max_value=20.0, value=7.0, step=0.5)
+st.sidebar.divider()
 
-st.sidebar.header("2. Timeframes & Projections")
+# Gold Section with Toggle
+st.sidebar.subheader("Gold Investment")
+enable_gold = st.sidebar.toggle("Enable Gold Calculation", value=False)
+gold_amount = st.sidebar.number_input("Gold Amount (₹)", min_value=0.0, value=50000.0, step=5000.0, disabled=not enable_gold)
+
+st.sidebar.divider()
+
+# Fixed Deposit Section with Toggle
+st.sidebar.subheader("Fixed Deposit (FD) Investment")
+enable_fd = st.sidebar.toggle("Enable FD Calculation", value=False)
+fd_amount = st.sidebar.number_input("FD Amount (₹)", min_value=0.0, value=100000.0, step=5000.0, disabled=not enable_fd)
+fd_rate = st.sidebar.number_input("FD Interest Rate (% p.a.)", min_value=0.0, max_value=20.0, value=7.0, step=0.5, disabled=not enable_fd)
+
+st.sidebar.header("2. Timeframes & Benchmarks")
 lookback_years = st.sidebar.number_input("Historical Lookback (Years)", min_value=1, max_value=20, value=3)
 future_years = st.sidebar.number_input("🔮 Future Projection Horizon (Years)", min_value=1, max_value=30, value=5)
 
@@ -200,7 +200,7 @@ if st.sidebar.button("Analyze & Run Portfolio"):
         start_str = start_date.strftime('%Y-%m-%d')
         end_str = end_date.strftime('%Y-%m-%d')
         
-        with st.spinner("Fetching market historical data..."):
+        with st.spinner("Fetching Yahoo Finance historical & Mutual Fund NAV data..."):
             stock_data = yf.download(tickers, start=start_str, end=end_str, progress=False)
             close_prices = stock_data['Close'] if 'Close' in stock_data else stock_data
             if isinstance(close_prices, pd.Series):
@@ -222,7 +222,7 @@ if st.sidebar.button("Analyze & Run Portfolio"):
                     gold_close = gold_close.iloc[:, 0]
                 gold_close = gold_close.ffill().bfill()
 
-            # Mutual Fund Fetching (Only if toggled ON)
+            # Mutual Fund NAV Fetching (Only if toggled ON)
             mf_nav_start, mf_nav_curr = 10.0, 10.0
             mf_start_date, mf_curr_date = start_str, end_str
             if enable_mf and selected_mf:
