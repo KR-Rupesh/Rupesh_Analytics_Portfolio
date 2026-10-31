@@ -1,5 +1,3 @@
-import time
-import subprocess
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -19,12 +17,12 @@ st.title("📊 Portfolio, Sector & Automated Risk Profiler")
 def save_submission_to_gsheet(data_dict):
     try:
         scopes = ["https://www.googleapis.com/auth/spreadsheets"]
-        if os.path.exists("credentials.json"):
-            creds = Credentials.from_service_account_file("credentials.json", scopes=scopes)
-            client = gspread.authorize(creds)
-        elif "gcp_service_account" in st.secrets:
+        if "gcp_service_account" in st.secrets:
             creds_json = dict(st.secrets["gcp_service_account"])
             creds = Credentials.from_service_account_info(creds_json, scopes=scopes)
+            client = gspread.authorize(creds)
+        elif os.path.exists("credentials.json"):
+            creds = Credentials.from_service_account_file("credentials.json", scopes=scopes)
             client = gspread.authorize(creds)
         else:
             return
@@ -342,17 +340,3 @@ if st.sidebar.button("Analyze & Run Portfolio"):
             "auto_investor_type": auto_profile,
             "stock_return": stock_total_return_pct
         })
-
-with open("app.py", "w") as f:
-    f.write(app_code)
-
-# 4. Launch Streamlit server on 127.0.0.1:8501
-print("Starting Streamlit process...")
-subprocess.Popen(["streamlit", "run", "app.py", "--server.address", "127.0.0.1", "--server.port", "8501"])
-
-# Wait 5 seconds for server to start
-time.sleep(5)
-
-# 5. Connect Cloudflare Tunnel
-print("Launching Cloudflare Tunnel... Copy the link below to test in Incognito mode:")
-!./cloudflared tunnel --url http://127.0.0.1:8501
