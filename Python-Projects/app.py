@@ -14,10 +14,13 @@ st.set_page_config(page_title="NSE Portfolio Analyzer", layout="wide")
 st.title("📊 Portfolio, Sector & Automated Risk Profiler")
 
 # --- Google Sheets Integration ---
-# --- Google Sheets Integration ---
 def save_submission_to_gsheet(data_dict):
     try:
-        scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+        # Include BOTH Sheets and Drive scopes to satisfy gspread authorization requirements
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive"
+        ]
         
         if "gcp_service_account" in st.secrets:
             creds_json = dict(st.secrets["gcp_service_account"])
@@ -33,7 +36,7 @@ def save_submission_to_gsheet(data_dict):
         # Open workbook by exact title
         spreadsheet = client.open("Portfolio_User_Submissions")
         
-        # Explicitly get the first worksheet tab
+        # Select first worksheet tab
         sheet = spreadsheet.get_worksheet(0)
         
         headers = [
@@ -61,7 +64,6 @@ def save_submission_to_gsheet(data_dict):
         st.toast("✅ Submission logged to Google Sheets!", icon="📥")
 
     except Exception as e:
-        # Prints exact error details on screen instead of failing silently
         st.error(f"⚠️ Google Sheets Logging Failed: {e}")
 
 # 1. Fetch NSE Stocks Tickers
