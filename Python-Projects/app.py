@@ -342,7 +342,6 @@ if st.sidebar.button("Analyze & Run Portfolio"):
             "auto_investor_type": auto_profile,
             "stock_return": stock_total_return_pct
         })
-"""
 
 with open("app.py", "w") as f:
     f.write(app_code)
