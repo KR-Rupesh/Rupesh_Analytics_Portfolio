@@ -16,7 +16,6 @@ st.title("📊 Portfolio, Sector & Automated Risk Profiler")
 # --- Google Sheets Integration ---
 def save_submission_to_gsheet(data_dict):
     try:
-        # Include BOTH Sheets and Drive scopes to satisfy gspread authorization requirements
         scopes = [
             "https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/drive"
@@ -33,15 +32,13 @@ def save_submission_to_gsheet(data_dict):
             st.error("❌ Google Sheets Error: No GCP credentials found in st.secrets!")
             return
 
-        # Open workbook by exact title
         spreadsheet = client.open("Portfolio_User_Submissions")
-        
-        # Select first worksheet tab
         sheet = spreadsheet.get_worksheet(0)
         
         headers = [
             "Timestamp", "Selected Stocks", "Quantities", "Years", 
-            "Gold Amount", "FD Amount", "FD Rate", "Investor Profile", "Portfolio Return (%)"
+            "Mutual Funds", "MF Amount", "Gold Amount", "FD Amount", "FD Rate", 
+            "Investor Profile", "Portfolio Return (%)"
         ]
         
         existing_records = sheet.get_all_values()
@@ -53,6 +50,8 @@ def save_submission_to_gsheet(data_dict):
             ", ".join(data_dict["stocks"]),
             str(data_dict["quantities"]),
             data_dict["years"],
+            data_dict["mf_name"],
+            data_dict["mf_amount"],
             data_dict["gold_amount"],
             data_dict["fd_amount"],
             data_dict["fd_rate"],
@@ -85,7 +84,19 @@ def get_nse_stocks():
         "HDFCBANK.NS | HDFC Bank Ltd"
     ]
 
-# Sector Fetcher with Fallback Mapping
+# Fetch Mutual Fund List from AMFI
+@st.cache_data(ttl=86400)
+def get_mf_list():
+    try:
+        res = requests.get("https://api.mfapi.in/mf", timeout=10)
+        if res.status_code == 200:
+            data = res.json()
+            return {item["schemeName"]: item["schemeCode"] for item in data}
+    except Exception:
+        pass
+    return {"HDFC Top 100 Fund - Direct Plan - Growth": 119062}
+
+# Sector Fetcher
 @st.cache_data(ttl=86400)
 def get_stock_sector(ticker):
     fallback_map = {
@@ -108,7 +119,20 @@ def get_stock_sector(ticker):
         pass
     return fallback_map.get(ticker, "Other / Diversified")
 
+# Fetch Last Dividend Info
+def get_last_dividend(ticker):
+    try:
+        divs = yf.Ticker(ticker).dividends
+        if not divs.empty:
+            last_date = divs.index[-1].strftime("%Y-%m-%d")
+            last_val = f"₹{divs.iloc[-1]:.2f}"
+            return last_date, last_val
+    except Exception:
+        pass
+    return "N/A", "N/A"
+
 nse_stocks = get_nse_stocks()
+mf_dict = get_mf_list()
 
 # 2. Sidebar Inputs
 st.sidebar.header("1. Portfolio Asset Inputs")
@@ -125,6 +149,10 @@ if selected_stocks:
     for stock in selected_stocks:
         ticker = stock.split(" | ")[0]
         stock_quantities[ticker] = st.sidebar.number_input(f"Shares for {ticker}", min_value=1, value=10, step=1)
+
+st.sidebar.subheader("Mutual Fund Investment")
+selected_mf = st.sidebar.selectbox("Select Mutual Fund", options=list(mf_dict.keys()))
+mf_amount = st.sidebar.number_input("Mutual Fund Invested Amount (₹)", min_value=0.0, value=25000.0, step=5000.0)
 
 st.sidebar.header("2. Timeframes & Benchmarks")
 lookback_years = st.sidebar.number_input("Historical Lookback (Years)", min_value=1, max_value=20, value=3)
@@ -158,7 +186,7 @@ if st.sidebar.button("Analyze & Run Portfolio"):
         start_str = start_date.strftime('%Y-%m-%d')
         end_str = end_date.strftime('%Y-%m-%d')
         
-        with st.spinner("Fetching Yahoo Finance historical & sector data..."):
+        with st.spinner("Fetching Yahoo Finance historical & Mutual Fund NAV data..."):
             stock_data = yf.download(tickers, start=start_str, end=end_str, progress=False)
             close_prices = stock_data['Close'] if 'Close' in stock_data else stock_data
             if isinstance(close_prices, pd.Series):
@@ -177,36 +205,117 @@ if st.sidebar.button("Analyze & Run Portfolio"):
                 gold_close = gold_close.iloc[:, 0]
             gold_close = gold_close.ffill().bfill()
 
-        # Sector Mapping & Performance Tracking
+            # Mutual Fund NAV Fetching via AMFI API
+            mf_code = mf_dict.get(selected_mf)
+            mf_nav_start, mf_nav_curr = 10.0, 10.0
+            mf_start_date, mf_curr_date = start_str, end_str
+            try:
+                mf_res = requests.get(f"https://api.mfapi.in/mf/{mf_code}", timeout=10).json()
+                nav_data = mf_res.get("data", [])
+                if nav_data:
+                    mf_nav_curr = float(nav_data[0]["nav"])
+                    mf_curr_date = nav_data[0]["date"]
+                    mf_nav_start = float(nav_data[-1]["nav"])
+                    mf_start_date = nav_data[-1]["date"]
+            except Exception:
+                pass
+
+        # Sector Mapping & Master Table Generation
         sector_data = []
+        master_rows = []
         portfolio_series = pd.Series(0.0, index=close_prices.index)
         initial_stock_val = 0.0
         current_stock_val = 0.0
+
+        start_dt_str = close_prices.index[0].strftime('%Y-%m-%d')
+        curr_dt_str = close_prices.index[-1].strftime('%Y-%m-%d')
 
         for t in tickers:
             if t in close_prices.columns:
                 prices = close_prices[t]
                 shares = stock_quantities[t]
-                stk_start_val = prices.iloc[0] * shares
-                stk_curr_val = prices.iloc[-1] * shares
+                old_p = prices.iloc[0]
+                latest_p = prices.iloc[-1]
+                stk_start_val = old_p * shares
+                stk_curr_val = latest_p * shares
+                stk_ret = ((latest_p - old_p) / old_p) * 100
                 
                 portfolio_series += prices * shares
                 initial_stock_val += stk_start_val
                 current_stock_val += stk_curr_val
                 
+                div_date, div_amt = get_last_dividend(t)
                 sector_name = get_stock_sector(t)
+                
                 sector_data.append({
-                    "Ticker": t,
-                    "Sector": sector_name,
-                    "Shares": shares,
-                    "Start Val": stk_start_val,
-                    "Current Val": stk_curr_val
+                    "Ticker": t, "Sector": sector_name, "Shares": shares,
+                    "Start Val": stk_start_val, "Current Val": stk_curr_val
                 })
+
+                master_rows.append({
+                    "Selected Asset / Stock": t,
+                    "Price Taken Date": start_dt_str,
+                    "Old Price (₹)": f"₹{old_p:,.2f}",
+                    "Latest Date": curr_dt_str,
+                    "Latest Price (₹)": f"₹{latest_p:,.2f}",
+                    "Returns (%)": f"{stk_ret:+.2f}%",
+                    "Invested Amount (as per latest price)": f"₹{stk_curr_val:,.2f}",
+                    "Last Dividend Date": div_date,
+                    "Last Dividend (₹)": div_amt
+                })
+
+        # Add Mutual Fund to Master Table
+        mf_curr_val = (mf_amount / mf_nav_start) * mf_nav_curr if mf_nav_start > 0 else mf_amount
+        mf_ret = ((mf_nav_curr - mf_nav_start) / mf_nav_start) * 100 if mf_nav_start > 0 else 0.0
+        master_rows.append({
+            "Selected Asset / Stock": f"MF: {selected_mf[:25]}...",
+            "Price Taken Date": mf_start_date,
+            "Old Price (₹)": f"₹{mf_nav_start:,.2f} NAV",
+            "Latest Date": mf_curr_date,
+            "Latest Price (₹)": f"₹{mf_nav_curr:,.2f} NAV",
+            "Returns (%)": f"{mf_ret:+.2f}%",
+            "Invested Amount (as per latest price)": f"₹{mf_curr_val:,.2f}",
+            "Last Dividend Date": "N/A",
+            "Last Dividend (₹)": "N/A"
+        })
+
+        # Add Gold to Master Table
+        gold_start_p = gold_close.iloc[0] if not gold_close.empty else 1.0
+        gold_latest_p = gold_close.iloc[-1] if not gold_close.empty else 1.0
+        gold_curr_val = (gold_amount / gold_start_p) * gold_latest_p if gold_start_p > 0 else gold_amount
+        gold_ret = ((gold_latest_p - gold_start_p) / gold_start_p) * 100
+        master_rows.append({
+            "Selected Asset / Stock": "Gold (GOLDBEES)",
+            "Price Taken Date": start_dt_str,
+            "Old Price (₹)": f"₹{gold_start_p:,.2f}",
+            "Latest Date": curr_dt_str,
+            "Latest Price (₹)": f"₹{gold_latest_p:,.2f}",
+            "Returns (%)": f"{gold_ret:+.2f}%",
+            "Invested Amount (as per latest price)": f"₹{gold_curr_val:,.2f}",
+            "Last Dividend Date": "N/A",
+            "Last Dividend (₹)": "N/A"
+        })
+
+        # Add FD to Master Table
+        fd_days = (close_prices.index[-1] - close_prices.index[0]).days
+        fd_curr_val = fd_amount * ((1 + (fd_rate / 100 / 365)) ** fd_days)
+        fd_ret = ((fd_curr_val - fd_amount) / fd_amount) * 100 if fd_amount > 0 else 0.0
+        master_rows.append({
+            "Selected Asset / Stock": f"Fixed Deposit ({fd_rate}% p.a.)",
+            "Price Taken Date": start_dt_str,
+            "Old Price (₹)": f"₹{fd_amount:,.2f}",
+            "Latest Date": curr_dt_str,
+            "Latest Price (₹)": f"₹{fd_curr_val:,.2f}",
+            "Returns (%)": f"{fd_ret:+.2f}%",
+            "Invested Amount (as per latest price)": f"₹{fd_curr_val:,.2f}",
+            "Last Dividend Date": "N/A",
+            "Last Dividend (₹)": "N/A"
+        })
 
         stock_df = pd.DataFrame(sector_data)
 
-        total_initial_invested = initial_stock_val + gold_amount + fd_amount
-        equity_weight_pct = (initial_stock_val / total_initial_invested * 100) if total_initial_invested > 0 else 0
+        total_initial_invested = initial_stock_val + mf_amount + gold_amount + fd_amount
+        equity_weight_pct = ((initial_stock_val + mf_amount) / total_initial_invested * 100) if total_initial_invested > 0 else 0
         gold_weight_pct = (gold_amount / total_initial_invested * 100) if total_initial_invested > 0 else 0
         fd_weight_pct = (fd_amount / total_initial_invested * 100) if total_initial_invested > 0 else 0
 
@@ -263,7 +372,7 @@ if st.sidebar.button("Analyze & Run Portfolio"):
         with prof_col1:
             st.success(f"**Detected Risk Profile:** {auto_profile}")
             st.caption(profile_desc)
-            st.write(f"• **Equity (Stocks) Weight:** `{equity_weight_pct:.1f}%`")
+            st.write(f"• **Equity (Stocks & MFs) Weight:** `{equity_weight_pct:.1f}%`")
             st.write(f"• **Gold / Alternatives Weight:** `{gold_weight_pct:.1f}%`")
             st.write(f"• **Fixed Deposit (FD) Weight:** `{fd_weight_pct:.1f}%`")
 
@@ -279,15 +388,15 @@ if st.sidebar.button("Analyze & Run Portfolio"):
 
         st.divider()
 
-        # --- SECTOR & ASSET ALLOCATION PIE CHARTS ---
+        # Sector & Asset Allocation Pie Charts
         st.subheader("🍰 Asset Class & Sector Allocation Pie Charts")
         pie_col1, pie_col2 = st.columns(2)
         
         with pie_col1:
             st.subheader("Asset Class Breakdown")
             weights_df = pd.DataFrame({
-                "Asset Class": ["Stock Portfolio", "Gold", "Fixed Deposit (FD)"],
-                "Invested Amount (₹)": [initial_stock_val, gold_amount, fd_amount]
+                "Asset Class": ["Stock Portfolio", "Mutual Funds", "Gold", "Fixed Deposit (FD)"],
+                "Invested Amount (₹)": [initial_stock_val, mf_amount, gold_amount, fd_amount]
             })
             fig_asset_pie = px.pie(weights_df, values="Invested Amount (₹)", names="Asset Class", hole=0.4)
             st.plotly_chart(fig_asset_pie, use_container_width=True)
@@ -318,34 +427,18 @@ if st.sidebar.button("Analyze & Run Portfolio"):
 
         st.divider()
 
-        # --- SECTOR CONTRIBUTION TABLE ---
-        st.subheader("📊 Sector-Wise Performance & Contribution Summary")
-        if not stock_df.empty:
-            sector_table = stock_df.groupby("Sector").agg(
-                Initial_Capital=("Start Val", "sum"),
-                Current_Value=("Current Val", "sum"),
-                Stock_Count=("Ticker", "count")
-            ).reset_index()
-            
-            sector_table["Return (%)"] = ((sector_table["Current_Value"] - sector_table["Initial_Capital"]) / sector_table["Initial_Capital"]) * 100
-            sector_table["Portfolio Contribution (%)"] = (sector_table["Current_Value"] / current_stock_val) * 100 if current_stock_val > 0 else 0
-            
-            sector_table["Initial Capital (₹)"] = sector_table["Initial_Capital"].apply(lambda x: f"₹{x:,.2f}")
-            sector_table["Current Value (₹)"] = sector_table["Current_Value"].apply(lambda x: f"₹{x:,.2f}")
-            sector_table["Return (%)"] = sector_table["Return (%)"].apply(lambda x: f"{x:+.2f}%")
-            sector_table["Sector Share (%)"] = sector_table["Portfolio Contribution (%)"].apply(lambda x: f"{x:.1f}%")
-            
-            st.dataframe(
-                sector_table[["Sector", "Stock_Count", "Initial Capital (₹)", "Current Value (₹)", "Return (%)", "Sector Share (%)"]],
-                use_container_width=True,
-                hide_index=True
-            )
+        # Master Portfolio Summary Table
+        st.subheader("📋 Comprehensive Portfolio Master Table")
+        master_df = pd.DataFrame(master_rows)
+        st.dataframe(master_df, use_container_width=True, hide_index=True)
 
         # Log Data
         save_submission_to_gsheet({
             "stocks": tickers,
             "quantities": stock_quantities,
             "years": lookback_years,
+            "mf_name": selected_mf,
+            "mf_amount": mf_amount,
             "gold_amount": gold_amount,
             "fd_amount": fd_amount,
             "fd_rate": fd_rate,
