@@ -135,7 +135,10 @@ nse_stocks = get_nse_stocks()
 mf_dict = get_mf_list()
 
 # 2. Sidebar Inputs
-st.sidebar.header("1. Portfolio Asset Inputs")
+st.sidebar.header("1. Asset Class Options")
+
+# Stocks (Default Active)
+st.sidebar.subheader("📈 NSE Equity Stocks (Default)")
 selected_stocks = st.sidebar.multiselect(
     "Select NSE Stocks (Max 10)",
     options=nse_stocks,
@@ -145,25 +148,36 @@ selected_stocks = st.sidebar.multiselect(
 
 stock_quantities = {}
 if selected_stocks:
-    st.sidebar.subheader("Stock Quantities")
+    st.sidebar.caption("Enter Share Quantities:")
     for stock in selected_stocks:
         ticker = stock.split(" | ")[0]
         stock_quantities[ticker] = st.sidebar.number_input(f"Shares for {ticker}", min_value=1, value=10, step=1)
 
-st.sidebar.subheader("Mutual Fund Investment")
-selected_mf = st.sidebar.selectbox("Select Mutual Fund", options=list(mf_dict.keys()))
-mf_amount = st.sidebar.number_input("Mutual Fund Invested Amount (₹)", min_value=0.0, value=25000.0, step=5000.0)
+# Mutual Fund Toggle
+enable_mf = st.sidebar.toggle("Include Mutual Funds in Analysis", value=False)
+selected_mf = None
+mf_amount = 0.0
+if enable_mf:
+    selected_mf = st.sidebar.selectbox("Select Mutual Fund", options=list(mf_dict.keys()))
+    mf_amount = st.sidebar.number_input("Mutual Fund Invested Amount (₹)", min_value=0.0, value=25000.0, step=5000.0)
 
-st.sidebar.header("2. Timeframes & Benchmarks")
+# Gold Toggle
+enable_gold = st.sidebar.toggle("Include Gold Investment", value=False)
+gold_amount = 0.0
+if enable_gold:
+    gold_amount = st.sidebar.number_input("Gold Amount (₹)", min_value=0.0, value=50000.0, step=5000.0)
+
+# FD Toggle
+enable_fd = st.sidebar.toggle("Include Fixed Deposit (FD)", value=False)
+fd_amount = 0.0
+fd_rate = 0.0
+if enable_fd:
+    fd_amount = st.sidebar.number_input("FD Amount (₹)", min_value=0.0, value=100000.0, step=5000.0)
+    fd_rate = st.sidebar.number_input("FD Interest Rate (% p.a.)", min_value=0.0, max_value=20.0, value=7.0, step=0.5)
+
+st.sidebar.header("2. Timeframes & Projections")
 lookback_years = st.sidebar.number_input("Historical Lookback (Years)", min_value=1, max_value=20, value=3)
 future_years = st.sidebar.number_input("🔮 Future Projection Horizon (Years)", min_value=1, max_value=30, value=5)
-
-st.sidebar.subheader("Gold Investment")
-gold_amount = st.sidebar.number_input("Gold Amount (₹)", min_value=0.0, value=50000.0, step=5000.0)
-
-st.sidebar.subheader("Fixed Deposit (FD) Investment")
-fd_amount = st.sidebar.number_input("FD Amount (₹)", min_value=0.0, value=100000.0, step=5000.0)
-fd_rate = st.sidebar.number_input("FD Interest Rate (% p.a.)", min_value=0.0, max_value=20.0, value=7.0, step=0.5)
 
 def classify_investor_profile(equity_pct, gold_pct, fd_pct):
     if equity_pct <= 40 and fd_pct >= 10:
@@ -186,7 +200,7 @@ if st.sidebar.button("Analyze & Run Portfolio"):
         start_str = start_date.strftime('%Y-%m-%d')
         end_str = end_date.strftime('%Y-%m-%d')
         
-        with st.spinner("Fetching Yahoo Finance historical & Mutual Fund NAV data..."):
+        with st.spinner("Fetching market historical data..."):
             stock_data = yf.download(tickers, start=start_str, end=end_str, progress=False)
             close_prices = stock_data['Close'] if 'Close' in stock_data else stock_data
             if isinstance(close_prices, pd.Series):
@@ -199,26 +213,30 @@ if st.sidebar.button("Analyze & Run Portfolio"):
                 nifty_close = nifty_close.iloc[:, 0]
             nifty_close = nifty_close.ffill().bfill()
 
-            gold_raw = yf.download("GOLDBEES.NS", start=start_str, end=end_str, progress=False)
-            gold_close = gold_raw['Close'] if 'Close' in gold_raw else gold_raw
-            if isinstance(gold_close, pd.DataFrame):
-                gold_close = gold_close.iloc[:, 0]
-            gold_close = gold_close.ffill().bfill()
+            # Gold Fetching (Only if toggled ON)
+            gold_close = pd.Series()
+            if enable_gold:
+                gold_raw = yf.download("GOLDBEES.NS", start=start_str, end=end_str, progress=False)
+                gold_close = gold_raw['Close'] if 'Close' in gold_raw else gold_raw
+                if isinstance(gold_close, pd.DataFrame):
+                    gold_close = gold_close.iloc[:, 0]
+                gold_close = gold_close.ffill().bfill()
 
-            # Mutual Fund NAV Fetching via AMFI API
-            mf_code = mf_dict.get(selected_mf)
+            # Mutual Fund Fetching (Only if toggled ON)
             mf_nav_start, mf_nav_curr = 10.0, 10.0
             mf_start_date, mf_curr_date = start_str, end_str
-            try:
-                mf_res = requests.get(f"https://api.mfapi.in/mf/{mf_code}", timeout=10).json()
-                nav_data = mf_res.get("data", [])
-                if nav_data:
-                    mf_nav_curr = float(nav_data[0]["nav"])
-                    mf_curr_date = nav_data[0]["date"]
-                    mf_nav_start = float(nav_data[-1]["nav"])
-                    mf_start_date = nav_data[-1]["date"]
-            except Exception:
-                pass
+            if enable_mf and selected_mf:
+                mf_code = mf_dict.get(selected_mf)
+                try:
+                    mf_res = requests.get(f"https://api.mfapi.in/mf/{mf_code}", timeout=10).json()
+                    nav_data = mf_res.get("data", [])
+                    if nav_data:
+                        mf_nav_curr = float(nav_data[0]["nav"])
+                        mf_curr_date = nav_data[0]["date"]
+                        mf_nav_start = float(nav_data[-1]["nav"])
+                        mf_start_date = nav_data[-1]["date"]
+                except Exception:
+                    pass
 
         # Sector Mapping & Master Table Generation
         sector_data = []
@@ -264,60 +282,71 @@ if st.sidebar.button("Analyze & Run Portfolio"):
                     "Last Dividend (₹)": div_amt
                 })
 
-        # Add Mutual Fund to Master Table
-        mf_curr_val = (mf_amount / mf_nav_start) * mf_nav_curr if mf_nav_start > 0 else mf_amount
-        mf_ret = ((mf_nav_curr - mf_nav_start) / mf_nav_start) * 100 if mf_nav_start > 0 else 0.0
-        master_rows.append({
-            "Selected Asset / Stock": f"MF: {selected_mf[:25]}...",
-            "Price Taken Date": mf_start_date,
-            "Old Price (₹)": f"₹{mf_nav_start:,.2f} NAV",
-            "Latest Date": mf_curr_date,
-            "Latest Price (₹)": f"₹{mf_nav_curr:,.2f} NAV",
-            "Returns (%)": f"{mf_ret:+.2f}%",
-            "Invested Amount (as per latest price)": f"₹{mf_curr_val:,.2f}",
-            "Last Dividend Date": "N/A",
-            "Last Dividend (₹)": "N/A"
-        })
+        # Add Mutual Fund row if toggled ON
+        mf_curr_val = 0.0
+        if enable_mf and selected_mf:
+            mf_curr_val = (mf_amount / mf_nav_start) * mf_nav_curr if mf_nav_start > 0 else mf_amount
+            mf_ret = ((mf_nav_curr - mf_nav_start) / mf_nav_start) * 100 if mf_nav_start > 0 else 0.0
+            master_rows.append({
+                "Selected Asset / Stock": f"MF: {selected_mf[:25]}...",
+                "Price Taken Date": mf_start_date,
+                "Old Price (₹)": f"₹{mf_nav_start:,.2f} NAV",
+                "Latest Date": mf_curr_date,
+                "Latest Price (₹)": f"₹{mf_nav_curr:,.2f} NAV",
+                "Returns (%)": f"{mf_ret:+.2f}%",
+                "Invested Amount (as per latest price)": f"₹{mf_curr_val:,.2f}",
+                "Last Dividend Date": "N/A",
+                "Last Dividend (₹)": "N/A"
+            })
 
-        # Add Gold to Master Table
-        gold_start_p = gold_close.iloc[0] if not gold_close.empty else 1.0
-        gold_latest_p = gold_close.iloc[-1] if not gold_close.empty else 1.0
-        gold_curr_val = (gold_amount / gold_start_p) * gold_latest_p if gold_start_p > 0 else gold_amount
-        gold_ret = ((gold_latest_p - gold_start_p) / gold_start_p) * 100
-        master_rows.append({
-            "Selected Asset / Stock": "Gold (GOLDBEES)",
-            "Price Taken Date": start_dt_str,
-            "Old Price (₹)": f"₹{gold_start_p:,.2f}",
-            "Latest Date": curr_dt_str,
-            "Latest Price (₹)": f"₹{gold_latest_p:,.2f}",
-            "Returns (%)": f"{gold_ret:+.2f}%",
-            "Invested Amount (as per latest price)": f"₹{gold_curr_val:,.2f}",
-            "Last Dividend Date": "N/A",
-            "Last Dividend (₹)": "N/A"
-        })
+        # Add Gold row if toggled ON
+        gold_curr_val = 0.0
+        gold_cagr = 0.0
+        if enable_gold and not gold_close.empty:
+            gold_start_p = gold_close.iloc[0]
+            gold_latest_p = gold_close.iloc[-1]
+            gold_curr_val = (gold_amount / gold_start_p) * gold_latest_p if gold_start_p > 0 else gold_amount
+            gold_ret = ((gold_latest_p - gold_start_p) / gold_start_p) * 100
+            gold_cagr = (((gold_latest_p / gold_start_p) ** (1 / lookback_years)) - 1) if gold_start_p > 0 else 0.08
+            master_rows.append({
+                "Selected Asset / Stock": "Gold (GOLDBEES)",
+                "Price Taken Date": start_dt_str,
+                "Old Price (₹)": f"₹{gold_start_p:,.2f}",
+                "Latest Date": curr_dt_str,
+                "Latest Price (₹)": f"₹{gold_latest_p:,.2f}",
+                "Returns (%)": f"{gold_ret:+.2f}%",
+                "Invested Amount (as per latest price)": f"₹{gold_curr_val:,.2f}",
+                "Last Dividend Date": "N/A",
+                "Last Dividend (₹)": "N/A"
+            })
 
-        # Add FD to Master Table
-        fd_days = (close_prices.index[-1] - close_prices.index[0]).days
-        fd_curr_val = fd_amount * ((1 + (fd_rate / 100 / 365)) ** fd_days)
-        fd_ret = ((fd_curr_val - fd_amount) / fd_amount) * 100 if fd_amount > 0 else 0.0
-        master_rows.append({
-            "Selected Asset / Stock": f"Fixed Deposit ({fd_rate}% p.a.)",
-            "Price Taken Date": start_dt_str,
-            "Old Price (₹)": f"₹{fd_amount:,.2f}",
-            "Latest Date": curr_dt_str,
-            "Latest Price (₹)": f"₹{fd_curr_val:,.2f}",
-            "Returns (%)": f"{fd_ret:+.2f}%",
-            "Invested Amount (as per latest price)": f"₹{fd_curr_val:,.2f}",
-            "Last Dividend Date": "N/A",
-            "Last Dividend (₹)": "N/A"
-        })
+        # Add FD row if toggled ON
+        fd_curr_val = 0.0
+        fd_cagr = 0.0
+        if enable_fd and fd_amount > 0:
+            fd_days = (close_prices.index[-1] - close_prices.index[0]).days
+            fd_curr_val = fd_amount * ((1 + (fd_rate / 100 / 365)) ** fd_days)
+            fd_ret = ((fd_curr_val - fd_amount) / fd_amount) * 100
+            fd_cagr = fd_rate / 100.0
+            master_rows.append({
+                "Selected Asset / Stock": f"Fixed Deposit ({fd_rate}% p.a.)",
+                "Price Taken Date": start_dt_str,
+                "Old Price (₹)": f"₹{fd_amount:,.2f}",
+                "Latest Date": curr_dt_str,
+                "Latest Price (₹)": f"₹{fd_curr_val:,.2f}",
+                "Returns (%)": f"{fd_ret:+.2f}%",
+                "Invested Amount (as per latest price)": f"₹{fd_curr_val:,.2f}",
+                "Last Dividend Date": "N/A",
+                "Last Dividend (₹)": "N/A"
+            })
 
         stock_df = pd.DataFrame(sector_data)
 
-        total_initial_invested = initial_stock_val + mf_amount + gold_amount + fd_amount
-        equity_weight_pct = ((initial_stock_val + mf_amount) / total_initial_invested * 100) if total_initial_invested > 0 else 0
-        gold_weight_pct = (gold_amount / total_initial_invested * 100) if total_initial_invested > 0 else 0
-        fd_weight_pct = (fd_amount / total_initial_invested * 100) if total_initial_invested > 0 else 0
+        # Dynamic Total Calculation (Includes ONLY active assets)
+        total_initial_invested = initial_stock_val + (mf_amount if enable_mf else 0.0) + (gold_amount if enable_gold else 0.0) + (fd_amount if enable_fd else 0.0)
+        equity_weight_pct = (((initial_stock_val + (mf_amount if enable_mf else 0.0)) / total_initial_invested) * 100) if total_initial_invested > 0 else 0.0
+        gold_weight_pct = ((gold_amount / total_initial_invested) * 100) if (enable_gold and total_initial_invested > 0) else 0.0
+        fd_weight_pct = ((fd_amount / total_initial_invested) * 100) if (enable_fd and total_initial_invested > 0) else 0.0
 
         auto_profile, profile_desc = classify_investor_profile(equity_weight_pct, gold_weight_pct, fd_weight_pct)
         stock_total_return_pct = ((current_stock_val - initial_stock_val) / initial_stock_val) * 100 if initial_stock_val > 0 else 0.0
@@ -326,20 +355,15 @@ if st.sidebar.button("Analyze & Run Portfolio"):
         max_daily_gain = daily_pct_change.max() if not daily_pct_change.empty else 0.0
         max_daily_drop = daily_pct_change.min() if not daily_pct_change.empty else 0.0
 
+        # Wealth Projections
         stock_cagr = (((current_stock_val / initial_stock_val) ** (1 / lookback_years)) - 1) if initial_stock_val > 0 else 0.0
-        gold_cagr = (((gold_close.iloc[-1] / gold_close.iloc[0]) ** (1 / lookback_years)) - 1) if not gold_close.empty and gold_close.iloc[0] > 0 else 0.08
-        fd_cagr = fd_rate / 100.0
-
         stock_fv = current_stock_val * ((1 + stock_cagr) ** future_years)
-        gold_fv = gold_amount * ((1 + gold_cagr) ** future_years)
-        fd_fv = fd_amount * ((1 + fd_cagr) ** future_years)
+        gold_fv = (gold_amount * ((1 + gold_cagr) ** future_years)) if enable_gold else 0.0
+        fd_fv = (fd_amount * ((1 + fd_cagr) ** future_years)) if enable_fd else 0.0
         total_projected_wealth = stock_fv + gold_fv + fd_fv
 
         portfolio_base100 = (portfolio_series / portfolio_series.iloc[0]) * 100
         nifty_base100 = (nifty_close / nifty_close.iloc[0]) * 100
-        gold_base100 = (gold_close / gold_close.iloc[0]) * 100 if not gold_close.empty else pd.Series(100.0, index=close_prices.index)
-        days = (close_prices.index - close_prices.index[0]).days
-        fd_base100 = 100 * ((1 + (fd_rate / 100 / 365)) ** days)
 
         # KPIs
         st.subheader("📌 Key Historical Indicators")
@@ -360,9 +384,9 @@ if st.sidebar.button("Analyze & Run Portfolio"):
         with fkpi2:
             st.metric("Projected Stock Value", f"₹{stock_fv:,.2f}", f"CAGR: {stock_cagr*100:+.2f}%")
         with fkpi3:
-            st.metric("Projected Gold Value", f"₹{gold_fv:,.2f}", f"CAGR: {gold_cagr*100:+.2f}%")
+            st.metric("Projected Gold Value", f"₹{gold_fv:,.2f}" if enable_gold else "N/A", f"CAGR: {gold_cagr*100:+.2f}%" if enable_gold else "Off")
         with fkpi4:
-            st.metric("Projected FD Value", f"₹{fd_fv:,.2f}", f"Rate: {fd_rate:.2f}%")
+            st.metric("Projected FD Value", f"₹{fd_fv:,.2f}" if enable_fd else "N/A", f"Rate: {fd_rate:.2f}%" if enable_fd else "Off")
 
         st.divider()
 
@@ -394,10 +418,19 @@ if st.sidebar.button("Analyze & Run Portfolio"):
         
         with pie_col1:
             st.subheader("Asset Class Breakdown")
-            weights_df = pd.DataFrame({
-                "Asset Class": ["Stock Portfolio", "Mutual Funds", "Gold", "Fixed Deposit (FD)"],
-                "Invested Amount (₹)": [initial_stock_val, mf_amount, gold_amount, fd_amount]
-            })
+            asset_labels = ["Stock Portfolio"]
+            asset_values = [initial_stock_val]
+            if enable_mf:
+                asset_labels.append("Mutual Funds")
+                asset_values.append(mf_amount)
+            if enable_gold:
+                asset_labels.append("Gold")
+                asset_values.append(gold_amount)
+            if enable_fd:
+                asset_labels.append("Fixed Deposit (FD)")
+                asset_values.append(fd_amount)
+
+            weights_df = pd.DataFrame({"Asset Class": asset_labels, "Invested Amount (₹)": asset_values})
             fig_asset_pie = px.pie(weights_df, values="Invested Amount (₹)", names="Asset Class", hole=0.4)
             st.plotly_chart(fig_asset_pie, use_container_width=True)
 
@@ -421,8 +454,16 @@ if st.sidebar.button("Analyze & Run Portfolio"):
         fig_line = go.Figure()
         fig_line.add_trace(go.Scatter(x=portfolio_base100.index, y=portfolio_base100, mode='lines', name='My Stock Portfolio'))
         fig_line.add_trace(go.Scatter(x=nifty_base100.index, y=nifty_base100, mode='lines', name='Nifty 50 Index'))
-        fig_line.add_trace(go.Scatter(x=gold_base100.index, y=gold_base100, mode='lines', name='Gold'))
-        fig_line.add_trace(go.Scatter(x=close_prices.index, y=fd_base100, mode='lines', name=f'FD ({fd_rate}%)', line=dict(dash='dash')))
+        
+        if enable_gold and not gold_close.empty:
+            gold_base100 = (gold_close / gold_close.iloc[0]) * 100
+            fig_line.add_trace(go.Scatter(x=gold_base100.index, y=gold_base100, mode='lines', name='Gold'))
+        
+        if enable_fd:
+            days = (close_prices.index - close_prices.index[0]).days
+            fd_base100 = 100 * ((1 + (fd_rate / 100 / 365)) ** days)
+            fig_line.add_trace(go.Scatter(x=close_prices.index, y=fd_base100, mode='lines', name=f'FD ({fd_rate}%)', line=dict(dash='dash')))
+            
         st.plotly_chart(fig_line, use_container_width=True)
 
         st.divider()
@@ -437,11 +478,11 @@ if st.sidebar.button("Analyze & Run Portfolio"):
             "stocks": tickers,
             "quantities": stock_quantities,
             "years": lookback_years,
-            "mf_name": selected_mf,
-            "mf_amount": mf_amount,
-            "gold_amount": gold_amount,
-            "fd_amount": fd_amount,
-            "fd_rate": fd_rate,
+            "mf_name": selected_mf if enable_mf else "Disabled",
+            "mf_amount": mf_amount if enable_mf else 0.0,
+            "gold_amount": gold_amount if enable_gold else 0.0,
+            "fd_amount": fd_amount if enable_fd else 0.0,
+            "fd_rate": fd_rate if enable_fd else 0.0,
             "auto_investor_type": auto_profile,
             "stock_return": stock_total_return_pct
         })
