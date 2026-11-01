@@ -222,7 +222,7 @@ if st.sidebar.button("Analyze & Run Portfolio"):
                     gold_close = gold_close.iloc[:, 0]
                 gold_close = gold_close.ffill().bfill()
 
-            # Mutual Fund NAV Fetching (Only if toggled ON)
+            # Mutual Fund NAV Fetching (Filtered to Lookback Period)
             mf_nav_start, mf_nav_curr = 10.0, 10.0
             mf_start_date, mf_curr_date = start_str, end_str
             if enable_mf and selected_mf:
@@ -231,10 +231,22 @@ if st.sidebar.button("Analyze & Run Portfolio"):
                     mf_res = requests.get(f"https://api.mfapi.in/mf/{mf_code}", timeout=10).json()
                     nav_data = mf_res.get("data", [])
                     if nav_data:
+                        # Latest NAV (first item in api response)
                         mf_nav_curr = float(nav_data[0]["nav"])
-                        mf_curr_date = nav_data[0]["date"]
-                        mf_nav_start = float(nav_data[-1]["nav"])
-                        mf_start_date = nav_data[-1]["date"]
+                        mf_curr_date = datetime.strptime(nav_data[0]["date"], "%d-%m-%Y").strftime("%Y-%m-%d")
+                        
+                        # Find NAV closest to the start_date (e.g. 3 years ago)
+                        target_start_dt = start_date.date() if isinstance(start_date, datetime) else start_date
+                        start_item = nav_data[-1]  # Fallback to oldest if lookback exceeds inception
+                        
+                        for entry in reversed(nav_data):
+                            entry_dt = datetime.strptime(entry["date"], "%d-%m-%Y").date()
+                            if entry_dt >= target_start_dt:
+                                start_item = entry
+                                break
+                                
+                        mf_nav_start = float(start_item["nav"])
+                        mf_start_date = datetime.strptime(start_item["date"], "%d-%m-%Y").strftime("%Y-%m-%d")
                 except Exception:
                     pass
 
