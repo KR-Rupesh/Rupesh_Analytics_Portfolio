@@ -302,9 +302,9 @@ if st.sidebar.button("Analyze & Run Portfolio"):
             master_rows.append({
                 "Selected Asset / Stock": f"MF: {selected_mf[:25]}...",
                 "Price Taken Date": mf_start_date,
-                "Old Price (₹)": f"₹{mf_nav_start:,.2f} NAV",
+                "Old Price (₹)": f"₹{mf_nav_start:,.2f}",
                 "Latest Date": mf_curr_date,
-                "Latest Price (₹)": f"₹{mf_nav_curr:,.2f} NAV",
+                "Latest Price (₹)": f"₹{mf_nav_curr:,.2f}",
                 "Returns (%)": f"{mf_ret:+.2f}%",
                 "Invested Amount (as per latest price)": f"₹{mf_curr_val:,.2f}",
                 "Last Dividend Date": "N/A",
