@@ -231,13 +231,11 @@ if st.sidebar.button("Analyze & Run Portfolio"):
                     mf_res = requests.get(f"https://api.mfapi.in/mf/{mf_code}", timeout=10).json()
                     nav_data = mf_res.get("data", [])
                     if nav_data:
-                        # Latest NAV (first item in api response)
                         mf_nav_curr = float(nav_data[0]["nav"])
                         mf_curr_date = datetime.strptime(nav_data[0]["date"], "%d-%m-%Y").strftime("%Y-%m-%d")
                         
-                        # Find NAV closest to the start_date (e.g. 3 years ago)
                         target_start_dt = start_date.date() if isinstance(start_date, datetime) else start_date
-                        start_item = nav_data[-1]  # Fallback to oldest if lookback exceeds inception
+                        start_item = nav_data[-1]
                         
                         for entry in reversed(nav_data):
                             entry_dt = datetime.strptime(entry["date"], "%d-%m-%Y").date()
@@ -354,8 +352,11 @@ if st.sidebar.button("Analyze & Run Portfolio"):
 
         stock_df = pd.DataFrame(sector_data)
 
-        # Dynamic Total Calculation (Includes ONLY active assets)
+        # Totals & Overall Return Calculations
         total_initial_invested = initial_stock_val + (mf_amount if enable_mf else 0.0) + (gold_amount if enable_gold else 0.0) + (fd_amount if enable_fd else 0.0)
+        total_latest_value = current_stock_val + (mf_curr_val if enable_mf else 0.0) + (gold_curr_val if enable_gold else 0.0) + (fd_curr_val if enable_fd else 0.0)
+        overall_combined_return_pct = ((total_latest_value - total_initial_invested) / total_initial_invested * 100) if total_initial_invested > 0 else 0.0
+
         equity_weight_pct = (((initial_stock_val + (mf_amount if enable_mf else 0.0)) / total_initial_invested) * 100) if total_initial_invested > 0 else 0.0
         gold_weight_pct = ((gold_amount / total_initial_invested) * 100) if (enable_gold and total_initial_invested > 0) else 0.0
         fd_weight_pct = ((fd_amount / total_initial_invested) * 100) if (enable_fd and total_initial_invested > 0) else 0.0
@@ -377,16 +378,18 @@ if st.sidebar.button("Analyze & Run Portfolio"):
         portfolio_base100 = (portfolio_series / portfolio_series.iloc[0]) * 100
         nifty_base100 = (nifty_close / nifty_close.iloc[0]) * 100
 
-        # KPIs
+        # KPIs Section
         st.subheader("📌 Key Historical Indicators")
-        kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+        kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
         with kpi1:
-            st.metric("Total Starting Capital", f"₹{total_initial_invested:,.2f}")
+            st.metric("Stock Starting Capital", f"₹{initial_stock_val:,.2f}")
         with kpi2:
-            st.metric("Stock Portfolio Return", f"{stock_total_return_pct:+.2f}%")
+            st.metric("Latest Portfolio Value", f"₹{total_latest_value:,.2f}")
         with kpi3:
-            st.metric("Max Single-Day Gain", f"{max_daily_gain:+.2f}%")
+            st.metric("Overall Combined Return", f"{overall_combined_return_pct:+.2f}%")
         with kpi4:
+            st.metric("Max Single-Day Gain", f"{max_daily_gain:+.2f}%")
+        with kpi5:
             st.metric("Max Single-Day Drop", f"{max_daily_drop:.2f}%")
 
         st.subheader(f"🔮 Future Value Projections ({future_years}-Year Horizon)")
@@ -461,20 +464,55 @@ if st.sidebar.button("Analyze & Run Portfolio"):
 
         st.divider()
 
-        # Line Chart
+        # Line Chart with Detailed Return Tooltips
         st.subheader("📈 Historical Performance (Base = 100)")
         fig_line = go.Figure()
-        fig_line.add_trace(go.Scatter(x=portfolio_base100.index, y=portfolio_base100, mode='lines', name='My Stock Portfolio'))
-        fig_line.add_trace(go.Scatter(x=nifty_base100.index, y=nifty_base100, mode='lines', name='Nifty 50 Index'))
+        
+        port_ret = portfolio_base100 - 100
+        fig_line.add_trace(go.Scatter(
+            x=portfolio_base100.index, 
+            y=portfolio_base100, 
+            mode='lines', 
+            name='My Stock Portfolio',
+            hovertemplate="<b>Date:</b> %{x|%Y-%m-%d}<br><b>Index Value:</b> %{y:.2f}<br><b>Return:</b> %{customdata:+.2f}%<extra></extra>",
+            customdata=port_ret
+        ))
+        
+        nifty_ret = nifty_base100 - 100
+        fig_line.add_trace(go.Scatter(
+            x=nifty_base100.index, 
+            y=nifty_base100, 
+            mode='lines', 
+            name='Nifty 50 Index',
+            hovertemplate="<b>Date:</b> %{x|%Y-%m-%d}<br><b>Index Value:</b> %{y:.2f}<br><b>Return:</b> %{customdata:+.2f}%<extra></extra>",
+            customdata=nifty_ret
+        ))
         
         if enable_gold and not gold_close.empty:
             gold_base100 = (gold_close / gold_close.iloc[0]) * 100
-            fig_line.add_trace(go.Scatter(x=gold_base100.index, y=gold_base100, mode='lines', name='Gold'))
+            gold_ret_series = gold_base100 - 100
+            fig_line.add_trace(go.Scatter(
+                x=gold_base100.index, 
+                y=gold_base100, 
+                mode='lines', 
+                name='Gold',
+                hovertemplate="<b>Date:</b> %{x|%Y-%m-%d}<br><b>Index Value:</b> %{y:.2f}<br><b>Return:</b> %{customdata:+.2f}%<extra></extra>",
+                customdata=gold_ret_series
+            ))
         
         if enable_fd:
             days = (close_prices.index - close_prices.index[0]).days
             fd_base100 = 100 * ((1 + (fd_rate / 100 / 365)) ** days)
-            fig_line.add_trace(go.Scatter(x=close_prices.index, y=fd_base100, mode='lines', name=f'FD ({fd_rate}%)', line=dict(dash='dash')))
+            fd_ret_series = fd_base100 - 100
+            fig_line.add_trace(go.Scatter(
+                x=close_prices.index, 
+                y=fd_base100, 
+                mode='lines', 
+                name=f'FD ({fd_rate}%)', 
+                line=dict(dash='dash'),
+                hovertemplate="<b>Date:</b> %{x|%Y-%m-%d}<br><b>Index Value:</b> %{y:.2f}<br><b>Return:</b> %{customdata:+.2f}%<extra></extra>",
+                customdata=fd_ret_series
+            ))
             
         st.plotly_chart(fig_line, use_container_width=True)
 
