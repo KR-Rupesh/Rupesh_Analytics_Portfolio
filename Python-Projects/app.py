@@ -427,12 +427,22 @@ if st.sidebar.button("Analyze & Run Portfolio"):
 
         st.divider()
 
-        # Sector & Asset Allocation Pie Charts
-        st.subheader("🍰 Asset Class & Sector Allocation Pie Charts")
+        # --- SECTOR & ASSET ALLOCATION PIE CHARTS (WITH INFO ICON) ---
+        pie_header_col, pie_info_col = st.columns([0.9, 0.1])
+        with pie_header_col:
+            st.subheader("🍰 Asset Class & Sector Allocation Pie Charts")
+        with pie_info_col:
+            with st.popover("ℹ️ Info"):
+                st.markdown("""
+                **Allocation Visualizations:**
+                * **Asset Class Breakdown:** Shows how your capital is distributed across Stocks, Mutual Funds, Gold, and FDs.
+                * **Sector Breakdown:** Analyzes stock portfolio concentration across industries to spot over-concentration risk.
+                """)
+
         pie_col1, pie_col2 = st.columns(2)
         
         with pie_col1:
-            st.subheader("Asset Class Breakdown")
+            st.caption("Asset Class Breakdown")
             asset_labels = ["Stock Portfolio"]
             asset_values = [initial_stock_val]
             if enable_mf:
@@ -450,7 +460,7 @@ if st.sidebar.button("Analyze & Run Portfolio"):
             st.plotly_chart(fig_asset_pie, use_container_width=True)
 
         with pie_col2:
-            st.subheader("Stock Portfolio Sector Breakdown")
+            st.caption("Stock Portfolio Sector Breakdown")
             if not stock_df.empty:
                 sector_summary = stock_df.groupby("Sector")["Current Val"].sum().reset_index()
                 fig_sector_pie = px.pie(
@@ -464,8 +474,19 @@ if st.sidebar.button("Analyze & Run Portfolio"):
 
         st.divider()
 
-        # Line Chart with Detailed Return Tooltips
-        st.subheader("📈 Historical Performance (Base = 100)")
+        # --- LINE CHART (WITH INFO ICON) ---
+        line_header_col, line_info_col = st.columns([0.9, 0.1])
+        with line_header_col:
+            st.subheader("📈 Historical Performance (Base = 100)")
+        with line_info_col:
+            with st.popover("ℹ️ Info"):
+                st.markdown("""
+                **Base 100 Growth Tracking:**
+                * All asset values are normalized to start at **100** on Day 1 of your lookback period.
+                * Allows a direct, side-by-side comparison of return trajectories against the **Nifty 50 Index** benchmark.
+                * Hover over any data point on the lines to view the exact date, index score, and total percentage return.
+                """)
+
         fig_line = go.Figure()
         
         port_ret = portfolio_base100 - 100
@@ -518,8 +539,18 @@ if st.sidebar.button("Analyze & Run Portfolio"):
 
         st.divider()
 
-        # Master Portfolio Summary Table
-        st.subheader("📋 Comprehensive Portfolio Master Table")
+        # --- MASTER TABLE (WITH INFO ICON) ---
+        table_header_col, table_info_col = st.columns([0.9, 0.1])
+        with table_header_col:
+            st.subheader("📋 Comprehensive Portfolio Master Table")
+        with table_info_col:
+            with st.popover("ℹ️ Info"):
+                st.markdown("""
+                **Master Asset Breakdown:**
+                * Displays starting vs. latest prices, overall return %, and current invested values for all selected stocks, active Mutual Funds, Gold, and FDs.
+                * Includes recent **Dividend Payout History** for equity stock selections.
+                """)
+
         master_df = pd.DataFrame(master_rows)
         st.dataframe(master_df, use_container_width=True, hide_index=True)
 
