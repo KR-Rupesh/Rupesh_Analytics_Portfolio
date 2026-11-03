@@ -384,7 +384,7 @@ if st.sidebar.button("Analyze & Run Portfolio"):
         with kpi1:
             st.metric("Stock Starting Capital", f"₹{initial_stock_val:,.2f}")
         with kpi2:
-            st.metric("Latest Portfolio Value", f"₹{total_latest_value:,.2f}")
+            st.metric("Latest Stock Value", f"₹{current_stock_val:,.2f}")
         with kpi3:
             st.metric("Overall Combined Return", f"{overall_combined_return_pct:+.2f}%")
         with kpi4:
