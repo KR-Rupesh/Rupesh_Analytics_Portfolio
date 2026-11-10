@@ -65,8 +65,8 @@ def save_submission_to_gsheet(data_dict):
     except Exception as e:
         st.error(f"⚠️ Google Sheets Logging Failed: {e}")
 
-# 1. Fetch NSE Stocks Tickers
-@st.cache_data(ttl=86400)
+# 1. Fetch NSE Stocks Tickers (Cached for 24h)
+@st.cache_data(ttl=86400, show_spinner=False)
 def get_nse_stocks():
     url = "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv"
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -84,8 +84,8 @@ def get_nse_stocks():
         "HDFCBANK.NS | HDFC Bank Ltd"
     ]
 
-# Fetch Mutual Fund List from AMFI
-@st.cache_data(ttl=86400)
+# Fetch Mutual Fund List from AMFI (Cached for 24h)
+@st.cache_data(ttl=86400, show_spinner=False)
 def get_mf_list():
     try:
         res = requests.get("https://api.mfapi.in/mf", timeout=10)
@@ -96,8 +96,8 @@ def get_mf_list():
         pass
     return {"HDFC Top 100 Fund - Direct Plan - Growth": 119062}
 
-# Sector Fetcher
-@st.cache_data(ttl=86400)
+# Sector Fetcher with Robust Exception & Fallback Handling
+@st.cache_data(ttl=86400, show_spinner=False)
 def get_stock_sector(ticker):
     fallback_map = {
         "RELIANCE.NS": "Energy / Conglomerate",
@@ -111,7 +111,8 @@ def get_stock_sector(ticker):
         "LT.NS": "Construction & Engineering"
     }
     try:
-        info = yf.Ticker(ticker).info
+        stock = yf.Ticker(ticker)
+        info = stock.info or {}
         sector = info.get("sector")
         if sector:
             return sector
@@ -119,7 +120,8 @@ def get_stock_sector(ticker):
         pass
     return fallback_map.get(ticker, "Other / Diversified")
 
-# Fetch Last Dividend Info
+# Fetch Last Dividend Info Safely
+@st.cache_data(ttl=3600, show_spinner=False)
 def get_last_dividend(ticker):
     try:
         divs = yf.Ticker(ticker).dividends
@@ -130,6 +132,19 @@ def get_last_dividend(ticker):
     except Exception:
         pass
     return "N/A", "N/A"
+
+# Batched & Cached Download of Yahoo Finance Data
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_historical_stock_data(tickers, start_str, end_str):
+    try:
+        stock_data = yf.download(tickers, start=start_str, end=end_str, progress=False)
+        close_prices = stock_data['Close'] if 'Close' in stock_data else stock_data
+        if isinstance(close_prices, pd.Series):
+            close_prices = close_prices.to_frame(name=tickers[0])
+        close_prices = close_prices.ffill().bfill()
+        return close_prices
+    except Exception:
+        return pd.DataFrame()
 
 nse_stocks = get_nse_stocks()
 mf_dict = get_mf_list()
@@ -201,11 +216,7 @@ if st.sidebar.button("Analyze & Run Portfolio"):
         end_str = end_date.strftime('%Y-%m-%d')
         
         with st.spinner("Fetching Yahoo Finance historical & Mutual Fund NAV data..."):
-            stock_data = yf.download(tickers, start=start_str, end=end_str, progress=False)
-            close_prices = stock_data['Close'] if 'Close' in stock_data else stock_data
-            if isinstance(close_prices, pd.Series):
-                close_prices = close_prices.to_frame(name=tickers[0])
-            close_prices = close_prices.ffill().bfill()
+            close_prices = fetch_historical_stock_data(tickers, start_str, end_str)
 
             nifty_raw = yf.download("^NSEI", start=start_str, end=end_str, progress=False)
             nifty_close = nifty_raw['Close'] if 'Close' in nifty_raw else nifty_raw
@@ -214,7 +225,7 @@ if st.sidebar.button("Analyze & Run Portfolio"):
             nifty_close = nifty_close.ffill().bfill()
 
             # Gold Fetching (Only if toggled ON)
-            gold_close = pd.Series()
+            gold_close = pd.Series(dtype=float)
             if enable_gold:
                 gold_raw = yf.download("GOLDBEES.NS", start=start_str, end=end_str, progress=False)
                 gold_close = gold_raw['Close'] if 'Close' in gold_raw else gold_raw
@@ -248,322 +259,325 @@ if st.sidebar.button("Analyze & Run Portfolio"):
                 except Exception:
                     pass
 
-        # Sector Mapping & Master Table Generation
-        sector_data = []
-        master_rows = []
-        portfolio_series = pd.Series(0.0, index=close_prices.index)
-        initial_stock_val = 0.0
-        current_stock_val = 0.0
+        if close_prices.empty:
+            st.error("Could not load price data for the selected stocks. Please try again.")
+        else:
+            # Sector Mapping & Master Table Generation
+            sector_data = []
+            master_rows = []
+            portfolio_series = pd.Series(0.0, index=close_prices.index)
+            initial_stock_val = 0.0
+            current_stock_val = 0.0
 
-        start_dt_str = close_prices.index[0].strftime('%Y-%m-%d')
-        curr_dt_str = close_prices.index[-1].strftime('%Y-%m-%d')
+            start_dt_str = close_prices.index[0].strftime('%Y-%m-%d')
+            curr_dt_str = close_prices.index[-1].strftime('%Y-%m-%d')
 
-        for t in tickers:
-            if t in close_prices.columns:
-                prices = close_prices[t]
-                shares = stock_quantities[t]
-                old_p = prices.iloc[0]
-                latest_p = prices.iloc[-1]
-                stk_start_val = old_p * shares
-                stk_curr_val = latest_p * shares
-                stk_ret = ((latest_p - old_p) / old_p) * 100
-                
-                portfolio_series += prices * shares
-                initial_stock_val += stk_start_val
-                current_stock_val += stk_curr_val
-                
-                div_date, div_amt = get_last_dividend(t)
-                sector_name = get_stock_sector(t)
-                
-                sector_data.append({
-                    "Ticker": t, "Sector": sector_name, "Shares": shares,
-                    "Start Val": stk_start_val, "Current Val": stk_curr_val
-                })
+            for t in tickers:
+                if t in close_prices.columns:
+                    prices = close_prices[t]
+                    shares = stock_quantities[t]
+                    old_p = prices.iloc[0]
+                    latest_p = prices.iloc[-1]
+                    stk_start_val = old_p * shares
+                    stk_curr_val = latest_p * shares
+                    stk_ret = ((latest_p - old_p) / old_p) * 100 if old_p > 0 else 0.0
+                    
+                    portfolio_series += prices * shares
+                    initial_stock_val += stk_start_val
+                    current_stock_val += stk_curr_val
+                    
+                    div_date, div_amt = get_last_dividend(t)
+                    sector_name = get_stock_sector(t)
+                    
+                    sector_data.append({
+                        "Ticker": t, "Sector": sector_name, "Shares": shares,
+                        "Start Val": stk_start_val, "Current Val": stk_curr_val
+                    })
 
+                    master_rows.append({
+                        "Selected Asset / Stock": t,
+                        "Price Taken Date": start_dt_str,
+                        "Old Price (₹)": f"₹{old_p:,.2f}",
+                        "Latest Date": curr_dt_str,
+                        "Latest Price (₹)": f"₹{latest_p:,.2f}",
+                        "Returns (%)": f"{stk_ret:+.2f}%",
+                        "Invested Amount (as per latest price)": f"₹{stk_curr_val:,.2f}",
+                        "Last Dividend Date": div_date,
+                        "Last Dividend (₹)": div_amt
+                    })
+
+            # Add Mutual Fund row if toggled ON
+            mf_curr_val = 0.0
+            if enable_mf and selected_mf:
+                mf_curr_val = (mf_amount / mf_nav_start) * mf_nav_curr if mf_nav_start > 0 else mf_amount
+                mf_ret = ((mf_nav_curr - mf_nav_start) / mf_nav_start) * 100 if mf_nav_start > 0 else 0.0
                 master_rows.append({
-                    "Selected Asset / Stock": t,
-                    "Price Taken Date": start_dt_str,
-                    "Old Price (₹)": f"₹{old_p:,.2f}",
-                    "Latest Date": curr_dt_str,
-                    "Latest Price (₹)": f"₹{latest_p:,.2f}",
-                    "Returns (%)": f"{stk_ret:+.2f}%",
-                    "Invested Amount (as per latest price)": f"₹{stk_curr_val:,.2f}",
-                    "Last Dividend Date": div_date,
-                    "Last Dividend (₹)": div_amt
+                    "Selected Asset / Stock": f"MF: {selected_mf[:25]}...",
+                    "Price Taken Date": mf_start_date,
+                    "Old Price (₹)": f"₹{mf_nav_start:,.2f}",
+                    "Latest Date": mf_curr_date,
+                    "Latest Price (₹)": f"₹{mf_nav_curr:,.2f}",
+                    "Returns (%)": f"{mf_ret:+.2f}%",
+                    "Invested Amount (as per latest price)": f"₹{mf_curr_val:,.2f}",
+                    "Last Dividend Date": "N/A",
+                    "Last Dividend (₹)": "N/A"
                 })
 
-        # Add Mutual Fund row if toggled ON
-        mf_curr_val = 0.0
-        if enable_mf and selected_mf:
-            mf_curr_val = (mf_amount / mf_nav_start) * mf_nav_curr if mf_nav_start > 0 else mf_amount
-            mf_ret = ((mf_nav_curr - mf_nav_start) / mf_nav_start) * 100 if mf_nav_start > 0 else 0.0
-            master_rows.append({
-                "Selected Asset / Stock": f"MF: {selected_mf[:25]}...",
-                "Price Taken Date": mf_start_date,
-                "Old Price (₹)": f"₹{mf_nav_start:,.2f}",
-                "Latest Date": mf_curr_date,
-                "Latest Price (₹)": f"₹{mf_nav_curr:,.2f}",
-                "Returns (%)": f"{mf_ret:+.2f}%",
-                "Invested Amount (as per latest price)": f"₹{mf_curr_val:,.2f}",
-                "Last Dividend Date": "N/A",
-                "Last Dividend (₹)": "N/A"
-            })
+            # Add Gold row if toggled ON
+            gold_curr_val = 0.0
+            gold_cagr = 0.0
+            if enable_gold and not gold_close.empty:
+                gold_start_p = gold_close.iloc[0]
+                gold_latest_p = gold_close.iloc[-1]
+                gold_curr_val = (gold_amount / gold_start_p) * gold_latest_p if gold_start_p > 0 else gold_amount
+                gold_ret = ((gold_latest_p - gold_start_p) / gold_start_p) * 100 if gold_start_p > 0 else 0.0
+                gold_cagr = (((gold_latest_p / gold_start_p) ** (1 / lookback_years)) - 1) if gold_start_p > 0 else 0.08
+                master_rows.append({
+                    "Selected Asset / Stock": "Gold (GOLDBEES)",
+                    "Price Taken Date": start_dt_str,
+                    "Old Price (₹)": f"₹{gold_start_p:,.2f}",
+                    "Latest Date": curr_dt_str,
+                    "Latest Price (₹)": f"₹{gold_latest_p:,.2f}",
+                    "Returns (%)": f"{gold_ret:+.2f}%",
+                    "Invested Amount (as per latest price)": f"₹{gold_curr_val:,.2f}",
+                    "Last Dividend Date": "N/A",
+                    "Last Dividend (₹)": "N/A"
+                })
 
-        # Add Gold row if toggled ON
-        gold_curr_val = 0.0
-        gold_cagr = 0.0
-        if enable_gold and not gold_close.empty:
-            gold_start_p = gold_close.iloc[0]
-            gold_latest_p = gold_close.iloc[-1]
-            gold_curr_val = (gold_amount / gold_start_p) * gold_latest_p if gold_start_p > 0 else gold_amount
-            gold_ret = ((gold_latest_p - gold_start_p) / gold_start_p) * 100
-            gold_cagr = (((gold_latest_p / gold_start_p) ** (1 / lookback_years)) - 1) if gold_start_p > 0 else 0.08
-            master_rows.append({
-                "Selected Asset / Stock": "Gold (GOLDBEES)",
-                "Price Taken Date": start_dt_str,
-                "Old Price (₹)": f"₹{gold_start_p:,.2f}",
-                "Latest Date": curr_dt_str,
-                "Latest Price (₹)": f"₹{gold_latest_p:,.2f}",
-                "Returns (%)": f"{gold_ret:+.2f}%",
-                "Invested Amount (as per latest price)": f"₹{gold_curr_val:,.2f}",
-                "Last Dividend Date": "N/A",
-                "Last Dividend (₹)": "N/A"
-            })
+            # Add FD row if toggled ON
+            fd_curr_val = 0.0
+            fd_cagr = 0.0
+            if enable_fd and fd_amount > 0:
+                fd_days = (close_prices.index[-1] - close_prices.index[0]).days
+                fd_curr_val = fd_amount * ((1 + (fd_rate / 100 / 365)) ** fd_days)
+                fd_ret = ((fd_curr_val - fd_amount) / fd_amount) * 100
+                fd_cagr = fd_rate / 100.0
+                master_rows.append({
+                    "Selected Asset / Stock": f"Fixed Deposit ({fd_rate}% p.a.)",
+                    "Price Taken Date": start_dt_str,
+                    "Old Price (₹)": f"₹{fd_amount:,.2f}",
+                    "Latest Date": curr_dt_str,
+                    "Latest Price (₹)": f"₹{fd_curr_val:,.2f}",
+                    "Returns (%)": f"{fd_ret:+.2f}%",
+                    "Invested Amount (as per latest price)": f"₹{fd_curr_val:,.2f}",
+                    "Last Dividend Date": "N/A",
+                    "Last Dividend (₹)": "N/A"
+                })
 
-        # Add FD row if toggled ON
-        fd_curr_val = 0.0
-        fd_cagr = 0.0
-        if enable_fd and fd_amount > 0:
-            fd_days = (close_prices.index[-1] - close_prices.index[0]).days
-            fd_curr_val = fd_amount * ((1 + (fd_rate / 100 / 365)) ** fd_days)
-            fd_ret = ((fd_curr_val - fd_amount) / fd_amount) * 100
-            fd_cagr = fd_rate / 100.0
-            master_rows.append({
-                "Selected Asset / Stock": f"Fixed Deposit ({fd_rate}% p.a.)",
-                "Price Taken Date": start_dt_str,
-                "Old Price (₹)": f"₹{fd_amount:,.2f}",
-                "Latest Date": curr_dt_str,
-                "Latest Price (₹)": f"₹{fd_curr_val:,.2f}",
-                "Returns (%)": f"{fd_ret:+.2f}%",
-                "Invested Amount (as per latest price)": f"₹{fd_curr_val:,.2f}",
-                "Last Dividend Date": "N/A",
-                "Last Dividend (₹)": "N/A"
-            })
+            stock_df = pd.DataFrame(sector_data)
 
-        stock_df = pd.DataFrame(sector_data)
+            # Totals & Overall Return Calculations
+            total_initial_invested = initial_stock_val + (mf_amount if enable_mf else 0.0) + (gold_amount if enable_gold else 0.0) + (fd_amount if enable_fd else 0.0)
+            total_latest_value = current_stock_val + (mf_curr_val if enable_mf else 0.0) + (gold_curr_val if enable_gold else 0.0) + (fd_curr_val if enable_fd else 0.0)
+            overall_combined_return_pct = ((total_latest_value - total_initial_invested) / total_initial_invested * 100) if total_initial_invested > 0 else 0.0
 
-        # Totals & Overall Return Calculations
-        total_initial_invested = initial_stock_val + (mf_amount if enable_mf else 0.0) + (gold_amount if enable_gold else 0.0) + (fd_amount if enable_fd else 0.0)
-        total_latest_value = current_stock_val + (mf_curr_val if enable_mf else 0.0) + (gold_curr_val if enable_gold else 0.0) + (fd_curr_val if enable_fd else 0.0)
-        overall_combined_return_pct = ((total_latest_value - total_initial_invested) / total_initial_invested * 100) if total_initial_invested > 0 else 0.0
+            equity_weight_pct = (((initial_stock_val + (mf_amount if enable_mf else 0.0)) / total_initial_invested) * 100) if total_initial_invested > 0 else 0.0
+            gold_weight_pct = ((gold_amount / total_initial_invested) * 100) if (enable_gold and total_initial_invested > 0) else 0.0
+            fd_weight_pct = ((fd_amount / total_initial_invested) * 100) if (enable_fd and total_initial_invested > 0) else 0.0
 
-        equity_weight_pct = (((initial_stock_val + (mf_amount if enable_mf else 0.0)) / total_initial_invested) * 100) if total_initial_invested > 0 else 0.0
-        gold_weight_pct = ((gold_amount / total_initial_invested) * 100) if (enable_gold and total_initial_invested > 0) else 0.0
-        fd_weight_pct = ((fd_amount / total_initial_invested) * 100) if (enable_fd and total_initial_invested > 0) else 0.0
+            auto_profile, profile_desc = classify_investor_profile(equity_weight_pct, gold_weight_pct, fd_weight_pct)
+            stock_total_return_pct = ((current_stock_val - initial_stock_val) / initial_stock_val) * 100 if initial_stock_val > 0 else 0.0
 
-        auto_profile, profile_desc = classify_investor_profile(equity_weight_pct, gold_weight_pct, fd_weight_pct)
-        stock_total_return_pct = ((current_stock_val - initial_stock_val) / initial_stock_val) * 100 if initial_stock_val > 0 else 0.0
+            daily_pct_change = portfolio_series.pct_change().dropna() * 100
+            max_daily_gain = daily_pct_change.max() if not daily_pct_change.empty else 0.0
+            max_daily_drop = daily_pct_change.min() if not daily_pct_change.empty else 0.0
 
-        daily_pct_change = portfolio_series.pct_change().dropna() * 100
-        max_daily_gain = daily_pct_change.max() if not daily_pct_change.empty else 0.0
-        max_daily_drop = daily_pct_change.min() if not daily_pct_change.empty else 0.0
+            # Wealth Projections
+            stock_cagr = (((current_stock_val / initial_stock_val) ** (1 / lookback_years)) - 1) if initial_stock_val > 0 else 0.0
+            stock_fv = current_stock_val * ((1 + stock_cagr) ** future_years)
+            gold_fv = (gold_amount * ((1 + gold_cagr) ** future_years)) if enable_gold else 0.0
+            fd_fv = (fd_amount * ((1 + fd_cagr) ** future_years)) if enable_fd else 0.0
+            total_projected_wealth = stock_fv + gold_fv + fd_fv
 
-        # Wealth Projections
-        stock_cagr = (((current_stock_val / initial_stock_val) ** (1 / lookback_years)) - 1) if initial_stock_val > 0 else 0.0
-        stock_fv = current_stock_val * ((1 + stock_cagr) ** future_years)
-        gold_fv = (gold_amount * ((1 + gold_cagr) ** future_years)) if enable_gold else 0.0
-        fd_fv = (fd_amount * ((1 + fd_cagr) ** future_years)) if enable_fd else 0.0
-        total_projected_wealth = stock_fv + gold_fv + fd_fv
+            portfolio_base100 = (portfolio_series / portfolio_series.iloc[0]) * 100
+            nifty_base100 = (nifty_close / nifty_close.iloc[0]) * 100
 
-        portfolio_base100 = (portfolio_series / portfolio_series.iloc[0]) * 100
-        nifty_base100 = (nifty_close / nifty_close.iloc[0]) * 100
+            # KPIs Section
+            st.subheader("📌 Key Historical Indicators")
+            kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
+            with kpi1:
+                st.metric("Stock Starting Capital", f"₹{initial_stock_val:,.2f}")
+            with kpi2:
+                st.metric("Latest Stock Value", f"₹{current_stock_val:,.2f}")
+            with kpi3:
+                st.metric("Overall Combined Return", f"{overall_combined_return_pct:+.2f}%")
+            with kpi4:
+                st.metric("Max Single-Day Gain", f"{max_daily_gain:+.2f}%")
+            with kpi5:
+                st.metric("Max Single-Day Drop", f"{max_daily_drop:.2f}%")
 
-        # KPIs Section
-        st.subheader("📌 Key Historical Indicators")
-        kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
-        with kpi1:
-            st.metric("Stock Starting Capital", f"₹{initial_stock_val:,.2f}")
-        with kpi2:
-            st.metric("Latest Stock Value", f"₹{current_stock_val:,.2f}")
-        with kpi3:
-            st.metric("Overall Combined Return", f"{overall_combined_return_pct:+.2f}%")
-        with kpi4:
-            st.metric("Max Single-Day Gain", f"{max_daily_gain:+.2f}%")
-        with kpi5:
-            st.metric("Max Single-Day Drop", f"{max_daily_drop:.2f}%")
+            st.subheader(f"🔮 Future Value Projections ({future_years}-Year Horizon)")
+            fkpi1, fkpi2, fkpi3, fkpi4 = st.columns(4)
+            with fkpi1:
+                st.metric("Total Projected Wealth", f"₹{total_projected_wealth:,.2f}")
+            with fkpi2:
+                st.metric("Projected Stock Value", f"₹{stock_fv:,.2f}", f"CAGR: {stock_cagr*100:+.2f}%")
+            with fkpi3:
+                st.metric("Projected Gold Value", f"₹{gold_fv:,.2f}" if enable_gold else "N/A", f"CAGR: {gold_cagr*100:+.2f}%" if enable_gold else "Off")
+            with fkpi4:
+                st.metric("Projected FD Value", f"₹{fd_fv:,.2f}" if enable_fd else "N/A", f"Rate: {fd_rate:.2f}%" if enable_fd else "Off")
 
-        st.subheader(f"🔮 Future Value Projections ({future_years}-Year Horizon)")
-        fkpi1, fkpi2, fkpi3, fkpi4 = st.columns(4)
-        with fkpi1:
-            st.metric("Total Projected Wealth", f"₹{total_projected_wealth:,.2f}")
-        with fkpi2:
-            st.metric("Projected Stock Value", f"₹{stock_fv:,.2f}", f"CAGR: {stock_cagr*100:+.2f}%")
-        with fkpi3:
-            st.metric("Projected Gold Value", f"₹{gold_fv:,.2f}" if enable_gold else "N/A", f"CAGR: {gold_cagr*100:+.2f}%" if enable_gold else "Off")
-        with fkpi4:
-            st.metric("Projected FD Value", f"₹{fd_fv:,.2f}" if enable_fd else "N/A", f"Rate: {fd_rate:.2f}%" if enable_fd else "Off")
+            st.divider()
 
-        st.divider()
+            # Risk Profile Tag
+            st.subheader("🏷️ Automated Investor Risk Classification")
+            prof_col1, prof_col2 = st.columns([1, 1])
+            with prof_col1:
+                st.success(f"**Detected Risk Profile:** {auto_profile}")
+                st.caption(profile_desc)
+                st.write(f"• **Equity (Stocks & MFs) Weight:** `{equity_weight_pct:.1f}%`")
+                st.write(f"• **Gold / Alternatives Weight:** `{gold_weight_pct:.1f}%`")
+                st.write(f"• **Fixed Deposit (FD) Weight:** `{fd_weight_pct:.1f}%`")
 
-        # Risk Profile Tag
-        st.subheader("🏷️ Automated Investor Risk Classification")
-        prof_col1, prof_col2 = st.columns([1, 1])
-        with prof_col1:
-            st.success(f"**Detected Risk Profile:** {auto_profile}")
-            st.caption(profile_desc)
-            st.write(f"• **Equity (Stocks & MFs) Weight:** `{equity_weight_pct:.1f}%`")
-            st.write(f"• **Gold / Alternatives Weight:** `{gold_weight_pct:.1f}%`")
-            st.write(f"• **Fixed Deposit (FD) Weight:** `{fd_weight_pct:.1f}%`")
+            with prof_col2:
+                st.subheader("Reference Benchmark Allocation Matrix")
+                matrix_df = pd.DataFrame([
+                    {"Risk Profile": "Conservative", "Equity": "20–40%", "Debt / FD": "10–15%", "Gold": "10–20%"},
+                    {"Risk Profile": "Moderate (Balanced)", "Equity": "50–65%", "Debt / FD": "5–10%", "Gold": "10–15%"},
+                    {"Risk Profile": "Aggressive", "Equity": "70–85%", "Debt / FD": "0–5%", "Gold": "5–10%"},
+                    {"Risk Profile": "Very Aggressive / Speculative", "Equity": "90–95%", "Debt / FD": "0%", "Gold": "0–5%"}
+                ])
+                st.dataframe(matrix_df, use_container_width=True, hide_index=True)
 
-        with prof_col2:
-            st.subheader("Reference Benchmark Allocation Matrix")
-            matrix_df = pd.DataFrame([
-                {"Risk Profile": "Conservative", "Equity": "20–40%", "Debt / FD": "10–15%", "Gold": "10–20%"},
-                {"Risk Profile": "Moderate (Balanced)", "Equity": "50–65%", "Debt / FD": "5–10%", "Gold": "10–15%"},
-                {"Risk Profile": "Aggressive", "Equity": "70–85%", "Debt / FD": "0–5%", "Gold": "5–10%"},
-                {"Risk Profile": "Very Aggressive / Speculative", "Equity": "90–95%", "Debt / FD": "0%", "Gold": "0–5%"}
-            ])
-            st.dataframe(matrix_df, use_container_width=True, hide_index=True)
+            st.divider()
 
-        st.divider()
+            # --- SECTOR & ASSET ALLOCATION PIE CHARTS (WITH INFO ICON) ---
+            pie_header_col, pie_info_col = st.columns([0.9, 0.1])
+            with pie_header_col:
+                st.subheader("🍰 Asset Class & Sector Allocation Pie Charts")
+            with pie_info_col:
+                with st.popover("ℹ️ Info"):
+                    st.markdown("""
+                    **Allocation Visualizations:**
+                    * **Asset Class Breakdown:** Shows how your capital is distributed across Stocks, Mutual Funds, Gold, and FDs.
+                    * **Sector Breakdown:** Analyzes stock portfolio concentration across industries to spot over-concentration risk.
+                    """)
 
-        # --- SECTOR & ASSET ALLOCATION PIE CHARTS (WITH INFO ICON) ---
-        pie_header_col, pie_info_col = st.columns([0.9, 0.1])
-        with pie_header_col:
-            st.subheader("🍰 Asset Class & Sector Allocation Pie Charts")
-        with pie_info_col:
-            with st.popover("ℹ️ Info"):
-                st.markdown("""
-                **Allocation Visualizations:**
-                * **Asset Class Breakdown:** Shows how your capital is distributed across Stocks, Mutual Funds, Gold, and FDs.
-                * **Sector Breakdown:** Analyzes stock portfolio concentration across industries to spot over-concentration risk.
-                """)
+            pie_col1, pie_col2 = st.columns(2)
+            
+            with pie_col1:
+                st.caption("Asset Class Breakdown")
+                asset_labels = ["Stock Portfolio"]
+                asset_values = [initial_stock_val]
+                if enable_mf:
+                    asset_labels.append("Mutual Funds")
+                    asset_values.append(mf_amount)
+                if enable_gold:
+                    asset_labels.append("Gold")
+                    asset_values.append(gold_amount)
+                if enable_fd:
+                    asset_labels.append("Fixed Deposit (FD)")
+                    asset_values.append(fd_amount)
 
-        pie_col1, pie_col2 = st.columns(2)
-        
-        with pie_col1:
-            st.caption("Asset Class Breakdown")
-            asset_labels = ["Stock Portfolio"]
-            asset_values = [initial_stock_val]
-            if enable_mf:
-                asset_labels.append("Mutual Funds")
-                asset_values.append(mf_amount)
-            if enable_gold:
-                asset_labels.append("Gold")
-                asset_values.append(gold_amount)
-            if enable_fd:
-                asset_labels.append("Fixed Deposit (FD)")
-                asset_values.append(fd_amount)
+                weights_df = pd.DataFrame({"Asset Class": asset_labels, "Invested Amount (₹)": asset_values})
+                fig_asset_pie = px.pie(weights_df, values="Invested Amount (₹)", names="Asset Class", hole=0.4)
+                st.plotly_chart(fig_asset_pie, use_container_width=True)
 
-            weights_df = pd.DataFrame({"Asset Class": asset_labels, "Invested Amount (₹)": asset_values})
-            fig_asset_pie = px.pie(weights_df, values="Invested Amount (₹)", names="Asset Class", hole=0.4)
-            st.plotly_chart(fig_asset_pie, use_container_width=True)
+            with pie_col2:
+                st.caption("Stock Portfolio Sector Breakdown")
+                if not stock_df.empty:
+                    sector_summary = stock_df.groupby("Sector")["Current Val"].sum().reset_index()
+                    fig_sector_pie = px.pie(
+                        sector_summary, 
+                        values="Current Val", 
+                        names="Sector", 
+                        hole=0.4,
+                        color_discrete_sequence=px.colors.qualitative.Pastel
+                    )
+                    st.plotly_chart(fig_sector_pie, use_container_width=True)
 
-        with pie_col2:
-            st.caption("Stock Portfolio Sector Breakdown")
-            if not stock_df.empty:
-                sector_summary = stock_df.groupby("Sector")["Current Val"].sum().reset_index()
-                fig_sector_pie = px.pie(
-                    sector_summary, 
-                    values="Current Val", 
-                    names="Sector", 
-                    hole=0.4,
-                    color_discrete_sequence=px.colors.qualitative.Pastel
-                )
-                st.plotly_chart(fig_sector_pie, use_container_width=True)
+            st.divider()
 
-        st.divider()
+            # --- LINE CHART (WITH INFO ICON) ---
+            line_header_col, line_info_col = st.columns([0.9, 0.1])
+            with line_header_col:
+                st.subheader("📈 Historical Performance (Base = 100)")
+            with line_info_col:
+                with st.popover("ℹ️ Info"):
+                    st.markdown("""
+                    **Base 100 Growth Tracking:**
+                    * All asset values are normalized to start at **100** on Day 1 of your lookback period.
+                    * Allows a direct, side-by-side comparison of return trajectories against the **Nifty 50 Index** benchmark.
+                    * Hover over any data point on the lines to view the exact date, index score, and total percentage return.
+                    """)
 
-        # --- LINE CHART (WITH INFO ICON) ---
-        line_header_col, line_info_col = st.columns([0.9, 0.1])
-        with line_header_col:
-            st.subheader("📈 Historical Performance (Base = 100)")
-        with line_info_col:
-            with st.popover("ℹ️ Info"):
-                st.markdown("""
-                **Base 100 Growth Tracking:**
-                * All asset values are normalized to start at **100** on Day 1 of your lookback period.
-                * Allows a direct, side-by-side comparison of return trajectories against the **Nifty 50 Index** benchmark.
-                * Hover over any data point on the lines to view the exact date, index score, and total percentage return.
-                """)
-
-        fig_line = go.Figure()
-        
-        port_ret = portfolio_base100 - 100
-        fig_line.add_trace(go.Scatter(
-            x=portfolio_base100.index, 
-            y=portfolio_base100, 
-            mode='lines', 
-            name='My Stock Portfolio',
-            hovertemplate="<b>Date:</b> %{x|%Y-%m-%d}<br><b>Index Value:</b> %{y:.2f}<br><b>Return:</b> %{customdata:+.2f}%<extra></extra>",
-            customdata=port_ret
-        ))
-        
-        nifty_ret = nifty_base100 - 100
-        fig_line.add_trace(go.Scatter(
-            x=nifty_base100.index, 
-            y=nifty_base100, 
-            mode='lines', 
-            name='Nifty 50 Index',
-            hovertemplate="<b>Date:</b> %{x|%Y-%m-%d}<br><b>Index Value:</b> %{y:.2f}<br><b>Return:</b> %{customdata:+.2f}%<extra></extra>",
-            customdata=nifty_ret
-        ))
-        
-        if enable_gold and not gold_close.empty:
-            gold_base100 = (gold_close / gold_close.iloc[0]) * 100
-            gold_ret_series = gold_base100 - 100
+            fig_line = go.Figure()
+            
+            port_ret = portfolio_base100 - 100
             fig_line.add_trace(go.Scatter(
-                x=gold_base100.index, 
-                y=gold_base100, 
+                x=portfolio_base100.index, 
+                y=portfolio_base100, 
                 mode='lines', 
-                name='Gold',
+                name='My Stock Portfolio',
                 hovertemplate="<b>Date:</b> %{x|%Y-%m-%d}<br><b>Index Value:</b> %{y:.2f}<br><b>Return:</b> %{customdata:+.2f}%<extra></extra>",
-                customdata=gold_ret_series
-            ))
-        
-        if enable_fd:
-            days = (close_prices.index - close_prices.index[0]).days
-            fd_base100 = 100 * ((1 + (fd_rate / 100 / 365)) ** days)
-            fd_ret_series = fd_base100 - 100
-            fig_line.add_trace(go.Scatter(
-                x=close_prices.index, 
-                y=fd_base100, 
-                mode='lines', 
-                name=f'FD ({fd_rate}%)', 
-                line=dict(dash='dash'),
-                hovertemplate="<b>Date:</b> %{x|%Y-%m-%d}<br><b>Index Value:</b> %{y:.2f}<br><b>Return:</b> %{customdata:+.2f}%<extra></extra>",
-                customdata=fd_ret_series
+                customdata=port_ret
             ))
             
-        st.plotly_chart(fig_line, use_container_width=True)
+            nifty_ret = nifty_base100 - 100
+            fig_line.add_trace(go.Scatter(
+                x=nifty_base100.index, 
+                y=nifty_base100, 
+                mode='lines', 
+                name='Nifty 50 Index',
+                hovertemplate="<b>Date:</b> %{x|%Y-%m-%d}<br><b>Index Value:</b> %{y:.2f}<br><b>Return:</b> %{customdata:+.2f}%<extra></extra>",
+                customdata=nifty_ret
+            ))
+            
+            if enable_gold and not gold_close.empty:
+                gold_base100 = (gold_close / gold_close.iloc[0]) * 100
+                gold_ret_series = gold_base100 - 100
+                fig_line.add_trace(go.Scatter(
+                    x=gold_base100.index, 
+                    y=gold_base100, 
+                    mode='lines', 
+                    name='Gold',
+                    hovertemplate="<b>Date:</b> %{x|%Y-%m-%d}<br><b>Index Value:</b> %{y:.2f}<br><b>Return:</b> %{customdata:+.2f}%<extra></extra>",
+                    customdata=gold_ret_series
+                ))
+            
+            if enable_fd:
+                days = (close_prices.index - close_prices.index[0]).days
+                fd_base100 = 100 * ((1 + (fd_rate / 100 / 365)) ** days)
+                fd_ret_series = fd_base100 - 100
+                fig_line.add_trace(go.Scatter(
+                    x=close_prices.index, 
+                    y=fd_base100, 
+                    mode='lines', 
+                    name=f'FD ({fd_rate}%)', 
+                    line=dict(dash='dash'),
+                    hovertemplate="<b>Date:</b> %{x|%Y-%m-%d}<br><b>Index Value:</b> %{y:.2f}<br><b>Return:</b> %{customdata:+.2f}%<extra></extra>",
+                    customdata=fd_ret_series
+                ))
+                
+            st.plotly_chart(fig_line, use_container_width=True)
 
-        st.divider()
+            st.divider()
 
-        # --- MASTER TABLE (WITH INFO ICON) ---
-        table_header_col, table_info_col = st.columns([0.9, 0.1])
-        with table_header_col:
-            st.subheader("📋 Comprehensive Portfolio Master Table")
-        with table_info_col:
-            with st.popover("ℹ️ Info"):
-                st.markdown("""
-                **Master Asset Breakdown:**
-                * Displays starting vs. latest prices, overall return %, and current invested values for all selected stocks, active Mutual Funds, Gold, and FDs.
-                * Includes recent **Dividend Payout History** for equity stock selections.
-                """)
+            # --- MASTER TABLE (WITH INFO ICON) ---
+            table_header_col, table_info_col = st.columns([0.9, 0.1])
+            with table_header_col:
+                st.subheader("📋 Comprehensive Portfolio Master Table")
+            with table_info_col:
+                with st.popover("ℹ️ Info"):
+                    st.markdown("""
+                    **Master Asset Breakdown:**
+                    * Displays starting vs. latest prices, overall return %, and current invested values for all selected stocks, active Mutual Funds, Gold, and FDs.
+                    * Includes recent **Dividend Payout History** for equity stock selections.
+                    """)
 
-        master_df = pd.DataFrame(master_rows)
-        st.dataframe(master_df, use_container_width=True, hide_index=True)
+            master_df = pd.DataFrame(master_rows)
+            st.dataframe(master_df, use_container_width=True, hide_index=True)
 
-        # Log Data
-        save_submission_to_gsheet({
-            "stocks": tickers,
-            "quantities": stock_quantities,
-            "years": lookback_years,
-            "mf_name": selected_mf if enable_mf else "Disabled",
-            "mf_amount": mf_amount if enable_mf else 0.0,
-            "gold_amount": gold_amount if enable_gold else 0.0,
-            "fd_amount": fd_amount if enable_fd else 0.0,
-            "fd_rate": fd_rate if enable_fd else 0.0,
-            "auto_investor_type": auto_profile,
-            "stock_return": stock_total_return_pct
-        })
+            # Log Data
+            save_submission_to_gsheet({
+                "stocks": tickers,
+                "quantities": stock_quantities,
+                "years": lookback_years,
+                "mf_name": selected_mf if enable_mf else "Disabled",
+                "mf_amount": mf_amount if enable_mf else 0.0,
+                "gold_amount": gold_amount if enable_gold else 0.0,
+                "fd_amount": fd_amount if enable_fd else 0.0,
+                "fd_rate": fd_rate if enable_fd else 0.0,
+                "auto_investor_type": auto_profile,
+                "stock_return": stock_total_return_pct
+            })
