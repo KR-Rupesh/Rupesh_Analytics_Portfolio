@@ -421,9 +421,10 @@ if st.sidebar.button("Analyze & Run Portfolio"):
             total_latest_value = current_stock_val + (total_mf_curr_val if enable_mf else 0.0) + (gold_curr_val if enable_gold else 0.0) + (fd_curr_val if enable_fd else 0.0)
             overall_combined_return_pct = ((total_latest_value - total_initial_invested) / total_initial_invested * 100) if total_initial_invested > 0 else 0.0
 
-            equity_weight_pct = (((initial_stock_val + (total_mf_initial if enable_mf else 0.0)) / total_initial_invested) * 100) if total_initial_invested > 0 else 0.0
-            gold_weight_pct = ((gold_amount / total_initial_invested) * 100) if (enable_gold and total_initial_invested > 0) else 0.0
-            fd_weight_pct = ((fd_amount / total_initial_invested) * 100) if (enable_fd and total_initial_invested > 0) else 0.0
+            # Latest Weightages for Automated Risk Profiling
+            equity_weight_pct = (((current_stock_val + (total_mf_curr_val if enable_mf else 0.0)) / total_latest_value) * 100) if total_latest_value > 0 else 0.0
+            gold_weight_pct = ((gold_curr_val / total_latest_value) * 100) if (enable_gold and total_latest_value > 0) else 0.0
+            fd_weight_pct = ((fd_curr_val / total_latest_value) * 100) if (enable_fd and total_latest_value > 0) else 0.0
 
             auto_profile, profile_desc = classify_investor_profile(equity_weight_pct, gold_weight_pct, fd_weight_pct)
             stock_total_return_pct = ((current_stock_val - initial_stock_val) / initial_stock_val) * 100 if initial_stock_val > 0 else 0.0
@@ -436,8 +437,8 @@ if st.sidebar.button("Analyze & Run Portfolio"):
             stock_cagr = (((current_stock_val / initial_stock_val) ** (1 / lookback_years)) - 1) if initial_stock_val > 0 else 0.0
             stock_fv = current_stock_val * ((1 + stock_cagr) ** future_years)
             mf_fv = total_mf_fv if enable_mf else 0.0
-            gold_fv = (gold_amount * ((1 + gold_cagr) ** future_years)) if enable_gold else 0.0
-            fd_fv = (fd_amount * ((1 + fd_cagr) ** future_years)) if enable_fd else 0.0
+            gold_fv = (gold_curr_val * ((1 + gold_cagr) ** future_years)) if enable_gold else 0.0
+            fd_fv = (fd_curr_val * ((1 + fd_cagr) ** future_years)) if enable_fd else 0.0
             total_projected_wealth = stock_fv + mf_fv + gold_fv + fd_fv
 
             portfolio_base100 = (portfolio_series / portfolio_series.iloc[0]) * 100
@@ -473,7 +474,7 @@ if st.sidebar.button("Analyze & Run Portfolio"):
             st.divider()
 
             # Risk Profile Tag
-            st.subheader("🏷️ Automated Investor Risk Classification")
+            st.subheader("🏷️ Automated Investor Risk Classification (Based on Latest Weights)")
             prof_col1, prof_col2 = st.columns([1, 1])
             with prof_col1:
                 st.success(f"**Detected Risk Profile:** {auto_profile}")
@@ -494,50 +495,103 @@ if st.sidebar.button("Analyze & Run Portfolio"):
 
             st.divider()
 
-            # --- SECTOR & ASSET ALLOCATION PIE CHARTS (WITH INFO ICON) ---
+            # --- ASSET CLASS ALLOCATION PIE CHARTS (STARTING CAP VS LATEST CAP) ---
             pie_header_col, pie_info_col = st.columns([0.9, 0.1])
             with pie_header_col:
-                st.subheader("🍰 Asset Class & Sector Allocation Pie Charts")
+                st.subheader("🍰 Asset Class Allocation Drift (Starting Cap vs. Latest Cap)")
             with pie_info_col:
                 with st.popover("ℹ️ Info"):
                     st.markdown("""
-                    **Allocation Visualizations:**
-                    * **Asset Class Breakdown:** Shows how your capital is distributed across Stocks, Mutual Funds, Gold, and FDs.
-                    * **Sector Breakdown:** Analyzes stock portfolio concentration across industries to spot over-concentration risk.
+                    **Asset Class Drift Visualizations:**
+                    * **Starting Capital Breakdown:** Shows your initial capital allocation when you entered the positions.
+                    * **Latest Capital Breakdown:** Shows how market rallies or drops have shifted your current portfolio weights today.
                     """)
 
-            pie_col1, pie_col2 = st.columns(2)
-            
-            with pie_col1:
-                st.caption("Asset Class Breakdown")
-                asset_labels = ["Stock Portfolio"]
-                asset_values = [initial_stock_val]
-                if enable_mf and total_mf_initial > 0:
-                    asset_labels.append("Mutual Funds")
-                    asset_values.append(total_mf_initial)
-                if enable_gold:
-                    asset_labels.append("Gold")
-                    asset_values.append(gold_amount)
-                if enable_fd:
-                    asset_labels.append("Fixed Deposit (FD)")
-                    asset_values.append(fd_amount)
+            asset_labels = ["Stock Portfolio"]
+            start_asset_values = [initial_stock_val]
+            latest_asset_values = [current_stock_val]
 
-                weights_df = pd.DataFrame({"Asset Class": asset_labels, "Invested Amount (₹)": asset_values})
-                fig_asset_pie = px.pie(weights_df, values="Invested Amount (₹)", names="Asset Class", hole=0.4)
-                st.plotly_chart(fig_asset_pie, use_container_width=True)
+            if enable_mf and total_mf_initial > 0:
+                asset_labels.append("Mutual Funds")
+                start_asset_values.append(total_mf_initial)
+                latest_asset_values.append(total_mf_curr_val)
+            if enable_gold:
+                asset_labels.append("Gold")
+                start_asset_values.append(gold_amount)
+                latest_asset_values.append(gold_curr_val)
+            if enable_fd:
+                asset_labels.append("Fixed Deposit (FD)")
+                start_asset_values.append(fd_amount)
+                latest_asset_values.append(fd_curr_val)
 
-            with pie_col2:
-                st.caption("Stock Portfolio Sector Breakdown")
-                if not stock_df.empty:
-                    sector_summary = stock_df.groupby("Sector")["Current Val"].sum().reset_index()
-                    fig_sector_pie = px.pie(
-                        sector_summary, 
-                        values="Current Val", 
-                        names="Sector", 
+            asset_col1, asset_col2 = st.columns(2)
+            with asset_col1:
+                st.caption("Asset Class Breakdown — As per Starting Capital")
+                start_weights_df = pd.DataFrame({
+                    "Asset Class": asset_labels,
+                    "Starting Amount (₹)": start_asset_values
+                })
+                fig_asset_start = px.pie(
+                    start_weights_df,
+                    values="Starting Amount (₹)",
+                    names="Asset Class",
+                    hole=0.4
+                )
+                st.plotly_chart(fig_asset_start, use_container_width=True)
+
+            with asset_col2:
+                st.caption("Asset Class Breakdown — As per Latest Capital")
+                latest_weights_df = pd.DataFrame({
+                    "Asset Class": asset_labels,
+                    "Latest Value (₹)": latest_asset_values
+                })
+                fig_asset_latest = px.pie(
+                    latest_weights_df,
+                    values="Latest Value (₹)",
+                    names="Asset Class",
+                    hole=0.4
+                )
+                st.plotly_chart(fig_asset_latest, use_container_width=True)
+
+            st.divider()
+
+            # --- STOCK SECTOR ALLOCATION PIE CHARTS (STARTING CAP VS LATEST CAP) ---
+            sec_header_col, sec_info_col = st.columns([0.9, 0.1])
+            with sec_header_col:
+                st.subheader("🏭 Stock Portfolio Sector Drift (Starting Cap vs. Latest Cap)")
+            with sec_info_col:
+                with st.popover("ℹ️ Info"):
+                    st.markdown("""
+                    **Sector Concentration Drift:**
+                    * **Starting Capital Sector Breakdown:** Shows your initial sector exposure.
+                    * **Latest Capital Sector Breakdown:** Helps spot over-concentration risk if one sector rallies disproportionately over time.
+                    """)
+
+            if not stock_df.empty:
+                sec_col1, sec_col2 = st.columns(2)
+                with sec_col1:
+                    st.caption("Stock Sector Breakdown — As per Starting Capital")
+                    sector_start_summary = stock_df.groupby("Sector")["Start Val"].sum().reset_index()
+                    fig_sector_start = px.pie(
+                        sector_start_summary,
+                        values="Start Val",
+                        names="Sector",
                         hole=0.4,
                         color_discrete_sequence=px.colors.qualitative.Pastel
                     )
-                    st.plotly_chart(fig_sector_pie, use_container_width=True)
+                    st.plotly_chart(fig_sector_start, use_container_width=True)
+
+                with sec_col2:
+                    st.caption("Stock Sector Breakdown — As per Latest Capital")
+                    sector_latest_summary = stock_df.groupby("Sector")["Current Val"].sum().reset_index()
+                    fig_sector_latest = px.pie(
+                        sector_latest_summary,
+                        values="Current Val",
+                        names="Sector",
+                        hole=0.4,
+                        color_discrete_sequence=px.colors.qualitative.Pastel
+                    )
+                    st.plotly_chart(fig_sector_latest, use_container_width=True)
 
             st.divider()
 
