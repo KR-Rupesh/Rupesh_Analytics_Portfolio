@@ -36,9 +36,10 @@ def save_submission_to_gsheet(data_dict):
         sheet = spreadsheet.get_worksheet(0)
         
         headers = [
-            "Timestamp", "Selected Stocks", "Quantities", "Years", 
-            "Mutual Funds", "MF Amount", "Gold Amount", "FD Amount", "FD Rate", 
-            "Investor Profile", "Portfolio Return (%)"
+            "Timestamp", "Selected Stocks", "Quantities", "Lookback Years", "Future Years",
+            "MF 1 Name", "MF 1 Amount", "MF 2 Name", "MF 2 Amount",
+            "Gold Amount", "FD Amount", "FD Rate",
+            "Investor Profile", "Stock Return (%)", "Combined Return (%)", "Total Projected Wealth (₹)"
         ]
         
         existing_records = sheet.get_all_values()
@@ -49,14 +50,19 @@ def save_submission_to_gsheet(data_dict):
             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             ", ".join(data_dict["stocks"]),
             str(data_dict["quantities"]),
-            data_dict["years"],
-            data_dict["mf_name"],
-            data_dict["mf_amount"],
+            data_dict["lookback_years"],
+            data_dict["future_years"],
+            data_dict["mf1_name"],
+            data_dict["mf1_amount"],
+            data_dict["mf2_name"],
+            data_dict["mf2_amount"],
             data_dict["gold_amount"],
             data_dict["fd_amount"],
             data_dict["fd_rate"],
             data_dict["auto_investor_type"],
-            f"{data_dict['stock_return']:.2f}%"
+            f"{data_dict['stock_return']:.2f}%",
+            f"{data_dict['combined_return']:.2f}%",
+            f"{data_dict['projected_wealth']:.2f}"
         ]
         
         sheet.append_row(row)
@@ -95,6 +101,33 @@ def get_mf_list():
     except Exception:
         pass
     return {"HDFC Top 100 Fund - Direct Plan - Growth": 119062}
+
+# Fetch Single Mutual Fund Historical NAV Helper (Cached for 1h)
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_mf_nav_pair(mf_code, start_date_obj, default_start_str, default_end_str):
+    mf_nav_start, mf_nav_curr = 10.0, 10.0
+    mf_start_date, mf_curr_date = default_start_str, default_end_str
+    try:
+        mf_res = requests.get(f"https://api.mfapi.in/mf/{mf_code}", timeout=10).json()
+        nav_data = mf_res.get("data", [])
+        if nav_data:
+            mf_nav_curr = float(nav_data[0]["nav"])
+            mf_curr_date = datetime.strptime(nav_data[0]["date"], "%d-%m-%Y").strftime("%Y-%m-%d")
+            
+            target_start_dt = start_date_obj.date() if isinstance(start_date_obj, datetime) else start_date_obj
+            start_item = nav_data[-1]
+            
+            for entry in reversed(nav_data):
+                entry_dt = datetime.strptime(entry["date"], "%d-%m-%Y").date()
+                if entry_dt >= target_start_dt:
+                    start_item = entry
+                    break
+                    
+            mf_nav_start = float(start_item["nav"])
+            mf_start_date = datetime.strptime(start_item["date"], "%d-%m-%Y").strftime("%Y-%m-%d")
+    except Exception:
+        pass
+    return mf_nav_start, mf_nav_curr, mf_start_date, mf_curr_date
 
 # Sector Fetcher with Robust Exception & Fallback Handling
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -148,6 +181,7 @@ def fetch_historical_stock_data(tickers, start_str, end_str):
 
 nse_stocks = get_nse_stocks()
 mf_dict = get_mf_list()
+mf_options = list(mf_dict.keys())
 
 # 2. Sidebar Inputs
 st.sidebar.header("1. Portfolio Asset Inputs")
@@ -169,11 +203,28 @@ if selected_stocks:
 
 st.sidebar.divider()
 
-# Mutual Fund Section with Toggle
-st.sidebar.subheader("Mutual Fund Investment")
+# Mutual Fund Section with Toggle (Max 2 Mutual Funds)
+st.sidebar.subheader("Mutual Fund Investment (Max 2)")
 enable_mf = st.sidebar.toggle("Enable Mutual Fund Calculation", value=False)
-selected_mf = st.sidebar.selectbox("Select Mutual Fund", options=list(mf_dict.keys()), disabled=not enable_mf)
-mf_amount = st.sidebar.number_input("Mutual Fund Invested Amount (₹)", min_value=0.0, value=25000.0, step=5000.0, disabled=not enable_mf)
+selected_mfs = st.sidebar.multiselect(
+    "Select Mutual Funds (Max 2)",
+    options=mf_options,
+    default=[mf_options[0]] if mf_options else [],
+    max_selections=2,
+    disabled=not enable_mf
+)
+
+mf_amounts = {}
+if enable_mf and selected_mfs:
+    for idx, mf_name in enumerate(selected_mfs, start=1):
+        short_label = mf_name[:30] + "..." if len(mf_name) > 30 else mf_name
+        mf_amounts[mf_name] = st.sidebar.number_input(
+            f"MF {idx} Amount: {short_label} (₹)",
+            min_value=0.0,
+            value=25000.0,
+            step=5000.0,
+            key=f"mf_amt_{idx}"
+        )
 
 st.sidebar.divider()
 
@@ -233,31 +284,29 @@ if st.sidebar.button("Analyze & Run Portfolio"):
                     gold_close = gold_close.iloc[:, 0]
                 gold_close = gold_close.ffill().bfill()
 
-            # Mutual Fund NAV Fetching (Filtered to Lookback Period)
-            mf_nav_start, mf_nav_curr = 10.0, 10.0
-            mf_start_date, mf_curr_date = start_str, end_str
-            if enable_mf and selected_mf:
-                mf_code = mf_dict.get(selected_mf)
-                try:
-                    mf_res = requests.get(f"https://api.mfapi.in/mf/{mf_code}", timeout=10).json()
-                    nav_data = mf_res.get("data", [])
-                    if nav_data:
-                        mf_nav_curr = float(nav_data[0]["nav"])
-                        mf_curr_date = datetime.strptime(nav_data[0]["date"], "%d-%m-%Y").strftime("%Y-%m-%d")
-                        
-                        target_start_dt = start_date.date() if isinstance(start_date, datetime) else start_date
-                        start_item = nav_data[-1]
-                        
-                        for entry in reversed(nav_data):
-                            entry_dt = datetime.strptime(entry["date"], "%d-%m-%Y").date()
-                            if entry_dt >= target_start_dt:
-                                start_item = entry
-                                break
-                                
-                        mf_nav_start = float(start_item["nav"])
-                        mf_start_date = datetime.strptime(start_item["date"], "%d-%m-%Y").strftime("%Y-%m-%d")
-                except Exception:
-                    pass
+            # Mutual Funds NAV Fetching (Up to 2 MFs)
+            mf_results = []
+            if enable_mf and selected_mfs:
+                for mf_name in selected_mfs:
+                    mf_code = mf_dict.get(mf_name)
+                    invested_amt = mf_amounts.get(mf_name, 0.0)
+                    nav_start, nav_curr, m_start_dt, m_curr_dt = fetch_mf_nav_pair(
+                        mf_code, start_date, start_str, end_str
+                    )
+                    curr_val = (invested_amt / nav_start) * nav_curr if nav_start > 0 else invested_amt
+                    ret_pct = ((nav_curr - nav_start) / nav_start) * 100 if nav_start > 0 else 0.0
+                    mf_cagr = (((nav_curr / nav_start) ** (1 / lookback_years)) - 1) if nav_start > 0 else 0.0
+                    mf_results.append({
+                        "name": mf_name,
+                        "invested": invested_amt,
+                        "curr_val": curr_val,
+                        "nav_start": nav_start,
+                        "nav_curr": nav_curr,
+                        "start_date": m_start_dt,
+                        "curr_date": m_curr_dt,
+                        "ret_pct": ret_pct,
+                        "cagr": mf_cagr
+                    })
 
         if close_prices.empty:
             st.error("Could not load price data for the selected stocks. Please try again.")
@@ -306,19 +355,20 @@ if st.sidebar.button("Analyze & Run Portfolio"):
                         "Last Dividend (₹)": div_amt
                     })
 
-            # Add Mutual Fund row if toggled ON
-            mf_curr_val = 0.0
-            if enable_mf and selected_mf:
-                mf_curr_val = (mf_amount / mf_nav_start) * mf_nav_curr if mf_nav_start > 0 else mf_amount
-                mf_ret = ((mf_nav_curr - mf_nav_start) / mf_nav_start) * 100 if mf_nav_start > 0 else 0.0
+            # Add Mutual Fund rows if toggled ON (Up to 2 MFs)
+            total_mf_initial = sum(item["invested"] for item in mf_results)
+            total_mf_curr_val = sum(item["curr_val"] for item in mf_results)
+            total_mf_fv = sum(item["curr_val"] * ((1 + item["cagr"]) ** future_years) for item in mf_results)
+
+            for item in mf_results:
                 master_rows.append({
-                    "Selected Asset / Stock": f"MF: {selected_mf[:25]}...",
-                    "Price Taken Date": mf_start_date,
-                    "Old Price (₹)": f"₹{mf_nav_start:,.2f}",
-                    "Latest Date": mf_curr_date,
-                    "Latest Price (₹)": f"₹{mf_nav_curr:,.2f}",
-                    "Returns (%)": f"{mf_ret:+.2f}%",
-                    "Invested Amount (as per latest price)": f"₹{mf_curr_val:,.2f}",
+                    "Selected Asset / Stock": f"MF: {item['name'][:28]}...",
+                    "Price Taken Date": item["start_date"],
+                    "Old Price (₹)": f"₹{item['nav_start']:,.2f}",
+                    "Latest Date": item["curr_date"],
+                    "Latest Price (₹)": f"₹{item['nav_curr']:,.2f}",
+                    "Returns (%)": f"{item['ret_pct']:+.2f}%",
+                    "Invested Amount (as per latest price)": f"₹{item['curr_val']:,.2f}",
                     "Last Dividend Date": "N/A",
                     "Last Dividend (₹)": "N/A"
                 })
@@ -367,11 +417,11 @@ if st.sidebar.button("Analyze & Run Portfolio"):
             stock_df = pd.DataFrame(sector_data)
 
             # Totals & Overall Return Calculations
-            total_initial_invested = initial_stock_val + (mf_amount if enable_mf else 0.0) + (gold_amount if enable_gold else 0.0) + (fd_amount if enable_fd else 0.0)
-            total_latest_value = current_stock_val + (mf_curr_val if enable_mf else 0.0) + (gold_curr_val if enable_gold else 0.0) + (fd_curr_val if enable_fd else 0.0)
+            total_initial_invested = initial_stock_val + (total_mf_initial if enable_mf else 0.0) + (gold_amount if enable_gold else 0.0) + (fd_amount if enable_fd else 0.0)
+            total_latest_value = current_stock_val + (total_mf_curr_val if enable_mf else 0.0) + (gold_curr_val if enable_gold else 0.0) + (fd_curr_val if enable_fd else 0.0)
             overall_combined_return_pct = ((total_latest_value - total_initial_invested) / total_initial_invested * 100) if total_initial_invested > 0 else 0.0
 
-            equity_weight_pct = (((initial_stock_val + (mf_amount if enable_mf else 0.0)) / total_initial_invested) * 100) if total_initial_invested > 0 else 0.0
+            equity_weight_pct = (((initial_stock_val + (total_mf_initial if enable_mf else 0.0)) / total_initial_invested) * 100) if total_initial_invested > 0 else 0.0
             gold_weight_pct = ((gold_amount / total_initial_invested) * 100) if (enable_gold and total_initial_invested > 0) else 0.0
             fd_weight_pct = ((fd_amount / total_initial_invested) * 100) if (enable_fd and total_initial_invested > 0) else 0.0
 
@@ -385,9 +435,10 @@ if st.sidebar.button("Analyze & Run Portfolio"):
             # Wealth Projections
             stock_cagr = (((current_stock_val / initial_stock_val) ** (1 / lookback_years)) - 1) if initial_stock_val > 0 else 0.0
             stock_fv = current_stock_val * ((1 + stock_cagr) ** future_years)
+            mf_fv = total_mf_fv if enable_mf else 0.0
             gold_fv = (gold_amount * ((1 + gold_cagr) ** future_years)) if enable_gold else 0.0
             fd_fv = (fd_amount * ((1 + fd_cagr) ** future_years)) if enable_fd else 0.0
-            total_projected_wealth = stock_fv + gold_fv + fd_fv
+            total_projected_wealth = stock_fv + mf_fv + gold_fv + fd_fv
 
             portfolio_base100 = (portfolio_series / portfolio_series.iloc[0]) * 100
             nifty_base100 = (nifty_close / nifty_close.iloc[0]) * 100
@@ -402,19 +453,21 @@ if st.sidebar.button("Analyze & Run Portfolio"):
             with kpi3:
                 st.metric("Overall Combined Return", f"{overall_combined_return_pct:+.2f}%")
             with kpi4:
-                st.metric("Max Single-Day Gain", f"{max_daily_gain:+.2f}%")
+                st.metric("Max Single-Day Gain (Stocks)", f"{max_daily_gain:+.2f}%")
             with kpi5:
-                st.metric("Max Single-Day Drop", f"{max_daily_drop:.2f}%")
+                st.metric("Max Single-Day Drop (Stocks)", f"{max_daily_drop:.2f}%")
 
             st.subheader(f"🔮 Future Value Projections ({future_years}-Year Horizon)")
-            fkpi1, fkpi2, fkpi3, fkpi4 = st.columns(4)
+            fkpi1, fkpi2, fkpi3, fkpi4, fkpi5 = st.columns(5)
             with fkpi1:
                 st.metric("Total Projected Wealth", f"₹{total_projected_wealth:,.2f}")
             with fkpi2:
                 st.metric("Projected Stock Value", f"₹{stock_fv:,.2f}", f"CAGR: {stock_cagr*100:+.2f}%")
             with fkpi3:
-                st.metric("Projected Gold Value", f"₹{gold_fv:,.2f}" if enable_gold else "N/A", f"CAGR: {gold_cagr*100:+.2f}%" if enable_gold else "Off")
+                st.metric("Projected MF Value", f"₹{mf_fv:,.2f}" if enable_mf else "N/A", f"{len(mf_results)} Fund(s)" if enable_mf else "Off")
             with fkpi4:
+                st.metric("Projected Gold Value", f"₹{gold_fv:,.2f}" if enable_gold else "N/A", f"CAGR: {gold_cagr*100:+.2f}%" if enable_gold else "Off")
+            with fkpi5:
                 st.metric("Projected FD Value", f"₹{fd_fv:,.2f}" if enable_fd else "N/A", f"Rate: {fd_rate:.2f}%" if enable_fd else "Off")
 
             st.divider()
@@ -459,9 +512,9 @@ if st.sidebar.button("Analyze & Run Portfolio"):
                 st.caption("Asset Class Breakdown")
                 asset_labels = ["Stock Portfolio"]
                 asset_values = [initial_stock_val]
-                if enable_mf:
+                if enable_mf and total_mf_initial > 0:
                     asset_labels.append("Mutual Funds")
-                    asset_values.append(mf_amount)
+                    asset_values.append(total_mf_initial)
                 if enable_gold:
                     asset_labels.append("Gold")
                     asset_values.append(gold_amount)
@@ -568,16 +621,27 @@ if st.sidebar.button("Analyze & Run Portfolio"):
             master_df = pd.DataFrame(master_rows)
             st.dataframe(master_df, use_container_width=True, hide_index=True)
 
+            # Prepare MF 1 & MF 2 fields for Google Sheets logging
+            mf1_name = mf_results[0]["name"] if (enable_mf and len(mf_results) >= 1) else "Disabled"
+            mf1_amt = mf_results[0]["invested"] if (enable_mf and len(mf_results) >= 1) else 0.0
+            mf2_name = mf_results[1]["name"] if (enable_mf and len(mf_results) >= 2) else "None"
+            mf2_amt = mf_results[1]["invested"] if (enable_mf and len(mf_results) >= 2) else 0.0
+
             # Log Data
             save_submission_to_gsheet({
                 "stocks": tickers,
                 "quantities": stock_quantities,
-                "years": lookback_years,
-                "mf_name": selected_mf if enable_mf else "Disabled",
-                "mf_amount": mf_amount if enable_mf else 0.0,
+                "lookback_years": lookback_years,
+                "future_years": future_years,
+                "mf1_name": mf1_name,
+                "mf1_amount": mf1_amt,
+                "mf2_name": mf2_name,
+                "mf2_amount": mf2_amt,
                 "gold_amount": gold_amount if enable_gold else 0.0,
                 "fd_amount": fd_amount if enable_fd else 0.0,
                 "fd_rate": fd_rate if enable_fd else 0.0,
                 "auto_investor_type": auto_profile,
-                "stock_return": stock_total_return_pct
+                "stock_return": stock_total_return_pct,
+                "combined_return": overall_combined_return_pct,
+                "projected_wealth": total_projected_wealth
             })
